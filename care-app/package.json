@@ -4,11 +4,11 @@
   "version": "0.0.0",
   "scripts": {
     "dev": "next dev",
-    "prisma:generate": "prisma generate",
-    "build": "npm run prisma:generate && next build",
+    "prisma:generate": "node scripts/prisma-generate.cjs",
+    "build": "node scripts/prisma-generate.cjs && next build",
     "start": "next start",
     "lint": "eslint .",
-    "postinstall": "npm run prisma:generate"
+    "postinstall": "node scripts/prisma-generate.cjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.8",
