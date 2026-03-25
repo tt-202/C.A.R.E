@@ -1,0 +1,45 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(cuid())
+  firebaseUid String   @unique
+  email       String   @default("")
+  displayName String   @default("")
+  meals       Meal[]
+  createdAt   DateTime @default(now())
+}
+
+model Meal {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  startedAt       DateTime
+  endedAt         DateTime?
+  durationMs      Int?
+  plannedMealTime String?
+  bitesTotal      Int       @default(0)
+  section1Count   Int       @default(0)
+  section2Count   Int       @default(0)
+  section3Count   Int       @default(0)
+  section4Count   Int       @default(0)
+  bites           MealBite[]
+
+  @@index([userId])
+}
+
+model MealBite {
+  id         String   @id @default(cuid())
+  mealId     String
+  meal       Meal     @relation(fields: [mealId], references: [id], onDelete: Cascade)
+  sectionNum Int
+  createdAt  DateTime @default(now())
+
+  @@index([mealId])
+}

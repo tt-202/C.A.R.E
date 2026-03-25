@@ -1,0 +1,34 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getAuthContext } from "@/lib/authRequest";
+import { ensureUser } from "@/lib/ensureUser";
+import { prisma } from "@/lib/prisma";
+
+export async function POST(request: NextRequest) {
+  try {
+    const ctx = await getAuthContext(request);
+    const user = await ensureUser(ctx.uid, { email: ctx.email, displayName: ctx.name });
+    let body: { plannedMealTime?: string } = {};
+    try {
+      body = (await request.json()) as { plannedMealTime?: string };
+    } catch {
+      /* empty */
+    }
+    const meal = await prisma.meal.create({
+      data: {
+        userId: user.id,
+        startedAt: new Date(),
+        plannedMealTime: body.plannedMealTime ?? null,
+      },
+    });
+    return NextResponse.json({ mealId: meal.id });
+  } catch (e) {
+    if (e instanceof Error && e.message === "Unauthorized") {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (e instanceof Error && e.message === "FIREBASE_SERVICE_ACCOUNT_JSON is not set") {
+      return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
+    }
+    console.error(e);
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}

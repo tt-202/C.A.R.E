@@ -1,0 +1,358 @@
+import React, { useMemo, useState } from "react";
+import { motion } from "framer-motion";
+import {
+  Bell,
+  Clock3,
+  Activity,
+  AlertTriangle,
+  Play,
+  Pause,
+  Square,
+  Utensils,
+  User,
+  ShieldAlert,
+  ChevronRight,
+  CheckCircle2,
+  Settings,
+  History,
+  HeartPulse,
+} from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Progress } from "@/components/ui/progress";
+import { Switch } from "@/components/ui/switch";
+
+const plateSections = ["A", "B", "C", "D"];
+
+const initialLogs = [
+  { id: 1, time: "12:03 PM", event: "Meal session started", type: "info" },
+  { id: 2, time: "12:05 PM", event: "Bite delivered from section B", type: "success" },
+  { id: 3, time: "12:07 PM", event: "Distance threshold reached safely", type: "info" },
+  { id: 4, time: "12:09 PM", event: "Meal paused by caregiver", type: "warning" },
+];
+
+function SectionButton({ label, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-2xl border px-4 py-5 text-lg font-semibold transition ${
+        active
+          ? "border-black bg-black text-white"
+          : "border-zinc-200 bg-white hover:border-zinc-400"
+      }`}
+    >
+      Section {label}
+    </button>
+  );
+}
+
+function StatCard({ title, value, icon: Icon, subtext }) {
+  return (
+    <Card className="rounded-2xl shadow-sm">
+      <CardContent className="p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm text-zinc-500">{title}</p>
+            <p className="mt-1 text-2xl font-bold text-zinc-900">{value}</p>
+            {subtext ? <p className="mt-1 text-xs text-zinc-500">{subtext}</p> : null}
+          </div>
+          <div className="rounded-2xl bg-zinc-100 p-3">
+            <Icon className="h-5 w-5 text-zinc-700" />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function LogRow({ item }) {
+  const tone = {
+    success: "bg-emerald-100 text-emerald-700",
+    warning: "bg-amber-100 text-amber-700",
+    danger: "bg-red-100 text-red-700",
+    info: "bg-sky-100 text-sky-700",
+  }[item.type || "info"];
+
+  return (
+    <div className="flex items-center justify-between rounded-2xl border border-zinc-200 bg-white px-4 py-3">
+      <div>
+        <p className="font-medium text-zinc-900">{item.event}</p>
+        <p className="text-xs text-zinc-500">{item.time}</p>
+      </div>
+      <Badge className={`${tone} border-0`}>{item.type || "info"}</Badge>
+    </div>
+  );
+}
+
+export default function CareFeedingApp() {
+  const [role, setRole] = useState("caregiver");
+  const [selectedSection, setSelectedSection] = useState("B");
+  const [sessionActive, setSessionActive] = useState(true);
+  const [bitesCompleted, setBitesCompleted] = useState(5);
+  const [targetBites, setTargetBites] = useState(12);
+  const [biteInterval, setBiteInterval] = useState(20);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [logs, setLogs] = useState(initialLogs);
+  const [userName, setUserName] = useState("Alex Carter");
+  const [mealStatus, setMealStatus] = useState("Feeding in progress");
+
+  const progressValue = useMemo(
+    () => Math.min(100, Math.round((bitesCompleted / targetBites) * 100)),
+    [bitesCompleted, targetBites]
+  );
+
+  const addLog = (event, type = "info") => {
+    const now = new Date();
+    const time = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    setLogs((prev) => [{ id: Date.now(), time, event, type }, ...prev]);
+  };
+
+  const startSession = () => {
+    setSessionActive(true);
+    setMealStatus("Feeding in progress");
+    addLog("Meal session started", "success");
+  };
+
+  const pauseSession = () => {
+    setSessionActive(false);
+    setMealStatus("Paused");
+    addLog("Meal session paused", "warning");
+  };
+
+  const stopSession = () => {
+    setSessionActive(false);
+    setMealStatus("Stopped");
+    addLog("Meal session stopped", "danger");
+  };
+
+  const emergencyStop = () => {
+    setSessionActive(false);
+    setMealStatus("Emergency stop active");
+    addLog("Emergency stop triggered", "danger");
+  };
+
+  const deliverBite = () => {
+    const next = Math.min(targetBites, bitesCompleted + 1);
+    setBitesCompleted(next);
+    addLog(`Bite delivered from section ${selectedSection}`, "success");
+    if (next >= targetBites) {
+      setMealStatus("Meal completed");
+      setSessionActive(false);
+      addLog("Meal completed", "success");
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-zinc-50 p-6 text-zinc-900">
+      <div className="mx-auto max-w-7xl space-y-6">
+        <motion.div
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex flex-col gap-4 rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm md:flex-row md:items-center md:justify-between"
+        >
+          <div>
+            <div className="flex items-center gap-2">
+              <HeartPulse className="h-6 w-6" />
+              <h1 className="text-3xl font-bold">C.A.R.E. Feeding App</h1>
+            </div>
+            <p className="mt-2 text-sm text-zinc-600">
+              Computer-Assisted Robotic Eating dashboard for users and caregivers.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant={role === "user" ? "default" : "outline"}
+              className="rounded-2xl"
+              onClick={() => setRole("user")}
+            >
+              <User className="mr-2 h-4 w-4" /> User View
+            </Button>
+            <Button
+              variant={role === "caregiver" ? "default" : "outline"}
+              className="rounded-2xl"
+              onClick={() => setRole("caregiver")}
+            >
+              <ShieldAlert className="mr-2 h-4 w-4" /> Caregiver View
+            </Button>
+          </div>
+        </motion.div>
+
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <StatCard title="Current state" value={mealStatus} icon={Activity} subtext="Updated in real time" />
+          <StatCard title="Bites completed" value={`${bitesCompleted}/${targetBites}`} icon={Utensils} subtext="Current meal progress" />
+          <StatCard title="Selected food" value={`Section ${selectedSection}`} icon={ChevronRight} subtext="Segmented plate selection" />
+          <StatCard title="Bite interval" value={`${biteInterval}s`} icon={Clock3} subtext="Configurable pacing" />
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
+          <Card className="rounded-3xl shadow-sm">
+            <CardHeader>
+              <CardTitle>Session overview</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div>
+                <div className="mb-2 flex items-center justify-between text-sm">
+                  <span className="text-zinc-600">Meal progress</span>
+                  <span className="font-medium text-zinc-900">{progressValue}%</span>
+                </div>
+                <Progress value={progressValue} className="h-3" />
+              </div>
+
+              <Tabs defaultValue="controls" className="w-full">
+                <TabsList className="grid w-full grid-cols-3 rounded-2xl">
+                  <TabsTrigger value="controls">Controls</TabsTrigger>
+                  <TabsTrigger value="plate">Plate</TabsTrigger>
+                  <TabsTrigger value="settings">Settings</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="controls" className="mt-4 space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <Button className="rounded-2xl" onClick={startSession}>
+                      <Play className="mr-2 h-4 w-4" /> Start
+                    </Button>
+                    <Button variant="outline" className="rounded-2xl" onClick={pauseSession}>
+                      <Pause className="mr-2 h-4 w-4" /> Pause
+                    </Button>
+                    <Button variant="outline" className="rounded-2xl" onClick={stopSession}>
+                      <Square className="mr-2 h-4 w-4" /> Stop
+                    </Button>
+                    <Button variant="destructive" className="rounded-2xl" onClick={emergencyStop}>
+                      <AlertTriangle className="mr-2 h-4 w-4" /> E-Stop
+                    </Button>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Card className="rounded-2xl border-zinc-200">
+                      <CardContent className="p-4">
+                        <p className="text-sm text-zinc-500">Direct action</p>
+                        <Button className="mt-3 w-full rounded-2xl" onClick={deliverBite} disabled={!sessionActive}>
+                          <CheckCircle2 className="mr-2 h-4 w-4" /> Deliver Next Bite
+                        </Button>
+                      </CardContent>
+                    </Card>
+                    <Card className="rounded-2xl border-zinc-200">
+                      <CardContent className="p-4">
+                        <p className="text-sm text-zinc-500">Care recipient</p>
+                        <Input
+                          className="mt-3 rounded-2xl"
+                          value={userName}
+                          onChange={(e) => setUserName(e.target.value)}
+                        />
+                      </CardContent>
+                    </Card>
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="plate" className="mt-4 space-y-4">
+                  <p className="text-sm text-zinc-600">
+                    Select one of the segmented plate regions for the next feeding cycle.
+                  </p>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    {plateSections.map((section) => (
+                      <SectionButton
+                        key={section}
+                        label={section}
+                        active={selectedSection === section}
+                        onClick={() => {
+                          setSelectedSection(section);
+                          addLog(`Food section changed to ${section}`, "info");
+                        }}
+                      />
+                    ))}
+                  </div>
+                </TabsContent>
+
+                <TabsContent value="settings" className="mt-4 space-y-5">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Card className="rounded-2xl border-zinc-200">
+                      <CardContent className="p-4">
+                        <label className="text-sm text-zinc-500">Bite interval (seconds)</label>
+                        <Input
+                          type="number"
+                          min={5}
+                          max={60}
+                          className="mt-2 rounded-2xl"
+                          value={biteInterval}
+                          onChange={(e) => setBiteInterval(Number(e.target.value || 0))}
+                        />
+                      </CardContent>
+                    </Card>
+                    <Card className="rounded-2xl border-zinc-200">
+                      <CardContent className="p-4">
+                        <label className="text-sm text-zinc-500">Target bites per meal</label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={50}
+                          className="mt-2 rounded-2xl"
+                          value={targetBites}
+                          onChange={(e) => setTargetBites(Number(e.target.value || 0))}
+                        />
+                      </CardContent>
+                    </Card>
+                  </div>
+                  <div className="flex items-center justify-between rounded-2xl border border-zinc-200 bg-white p-4">
+                    <div>
+                      <p className="font-medium">Push notifications</p>
+                      <p className="text-sm text-zinc-500">Emergency alerts and meal reminders</p>
+                    </div>
+                    <Switch checked={notificationsEnabled} onCheckedChange={setNotificationsEnabled} />
+                  </div>
+                </TabsContent>
+              </Tabs>
+            </CardContent>
+          </Card>
+
+          <div className="space-y-6">
+            <Card className="rounded-3xl shadow-sm">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Bell className="h-5 w-5" /> Notifications
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                  <p className="font-medium">Meal reminder</p>
+                  <p className="text-sm text-zinc-500">Next scheduled meal at 6:00 PM</p>
+                </div>
+                <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                  <p className="font-medium">System health</p>
+                  <p className="text-sm text-zinc-500">All sensors responsive. No active faults.</p>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-3xl shadow-sm">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <History className="h-5 w-5" /> Activity log
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {logs.map((item) => (
+                  <LogRow key={item.id} item={item} />
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-3xl shadow-sm">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Settings className="h-5 w-5" /> Quick settings
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3 text-sm text-zinc-600">
+                <p>Role: <span className="font-medium text-zinc-900 capitalize">{role}</span></p>
+                <p>User: <span className="font-medium text-zinc-900">{userName}</span></p>
+                <p>Notifications: <span className="font-medium text-zinc-900">{notificationsEnabled ? "Enabled" : "Disabled"}</span></p>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

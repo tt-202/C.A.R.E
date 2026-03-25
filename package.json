@@ -1,0 +1,10 @@
+{
+  "name": "c-a-r-e",
+  "private": true,
+  "scripts": {
+    "dev": "npm run dev --prefix care-app",
+    "build": "npm run build --prefix care-app",
+    "start": "npm run start --prefix care-app",
+    "lint": "npm run lint --prefix care-app"
+  }
+}
