@@ -13,7 +13,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { getClientAuth, isFirebaseConfigured } from "@/lib/firebaseClient";
+import { getClientAuth } from "@/lib/firebaseClient";
 
 /**
  * High-contrast, warm cream fields — easier to see than light gray on white
@@ -47,12 +47,7 @@ function mapFirebaseError(message: string): string {
   return "Something went wrong. Please try again.";
 }
 
-type Props = {
-  /** When Firebase env is missing, this opens the app in local preview mode. */
-  onPreviewContinue?: () => void;
-};
-
-export default function AuthPage({ onPreviewContinue }: Props) {
+export default function AuthPage() {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -122,41 +117,6 @@ export default function AuthPage({ onPreviewContinue }: Props) {
       setBusy(false);
     }
   };
-
-  if (!isFirebaseConfigured()) {
-    return (
-      <div className="min-h-screen p-4 pb-12 md:flex md:items-center md:justify-center md:p-8">
-        <div className="mx-auto w-full max-w-md">
-          <header className="mb-8 text-center">
-            <div className="mb-4 flex justify-center">
-              <div className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] p-4 text-blue-900 shadow-lg">
-                <HeartPulse className="h-14 w-14 md:h-16 md:w-16" strokeWidth={2} aria-hidden />
-              </div>
-            </div>
-            <h1 className="text-4xl font-bold tracking-tight text-white md:text-5xl">C.A.R.E</h1>
-            <p className="mt-2 text-lg text-amber-100 md:text-xl">Your Helper - Your Friend</p>
-          </header>
-
-          <Card className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] text-stone-950 shadow-xl ring-0">
-            <CardContent className="space-y-6 p-6 md:p-8">
-              <p className="text-center text-xl font-bold text-stone-950">Preview the app</p>
-              <p className="text-center text-lg leading-relaxed text-stone-800">
-                No Firebase or database needed. You can click through every screen; meal history is saved only in this
-                browser until you add real sign-in later.
-              </p>
-              <Button
-                type="button"
-                className="h-16 w-full rounded-2xl border-2 border-blue-950 bg-blue-900 text-xl font-semibold text-white shadow-md hover:bg-blue-950"
-                onClick={onPreviewContinue}
-              >
-                Open app preview
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen p-4 pb-12 md:flex md:items-center md:justify-center md:p-8">
