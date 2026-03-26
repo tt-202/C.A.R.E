@@ -6,14 +6,9 @@ import AuthPage from "./AuthPage";
 import CareFeedingApp from "./CareFeedingApp";
 import RoleSelectPage from "./RoleSelectPage";
 import type { UserRole } from "./AuthPage";
-import { getClientAuth, isFirebaseConfigured } from "@/lib/firebaseClient";
+import { getClientAuth } from "@/lib/firebaseClient";
 
 const ROLE_KEY = "care_role";
-const PREVIEW_SESSION_KEY = "care_preview_session";
-
-type PreviewSession = { name: string; email: string };
-
-const PREVIEW_UID = "preview-local";
 
 function loadRole(uid: string): UserRole | undefined {
   try {
@@ -39,27 +34,10 @@ function clearRoleStorage() {
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [previewUser, setPreviewUser] = useState<PreviewSession | null>(null);
   const [role, setRole] = useState<UserRole | undefined>(undefined);
   const [authReady, setAuthReady] = useState(false);
 
-  const previewMode = !isFirebaseConfigured();
-
   useEffect(() => {
-    if (previewMode) {
-      try {
-        const raw = sessionStorage.getItem(PREVIEW_SESSION_KEY);
-        if (raw) {
-          const session = JSON.parse(raw) as PreviewSession;
-          queueMicrotask(() => setPreviewUser(session));
-        }
-      } catch {
-        /* ignore */
-      }
-      queueMicrotask(() => setAuthReady(true));
-      return;
-    }
-
     let auth;
     try {
       auth = getClientAuth();
@@ -78,22 +56,14 @@ export default function App() {
       setAuthReady(true);
     });
     return () => unsub();
-  }, [previewMode]);
+  }, []);
 
   const getIdToken = useCallback(async () => {
-    if (previewMode) return "";
     if (!user) throw new Error("Not signed in");
     return user.getIdToken();
-  }, [previewMode, user]);
+  }, [user]);
 
   const handleSignOut = async () => {
-    if (previewMode) {
-      sessionStorage.removeItem(PREVIEW_SESSION_KEY);
-      clearRoleStorage();
-      setPreviewUser(null);
-      setRole(undefined);
-      return;
-    }
     try {
       const auth = getClientAuth();
       await signOut(auth);
@@ -107,53 +77,6 @@ export default function App() {
     return (
       <div className="care-app-shell flex min-h-screen items-center justify-center text-xl text-white">
         Loading…
-      </div>
-    );
-  }
-
-  if (previewMode) {
-    if (!previewUser) {
-      return (
-        <div className="care-app-shell">
-          <AuthPage
-            onPreviewContinue={() => {
-              const session: PreviewSession = { name: "Preview", email: "preview@local.dev" };
-              sessionStorage.setItem(PREVIEW_SESSION_KEY, JSON.stringify(session));
-              setPreviewUser(session);
-            }}
-          />
-        </div>
-      );
-    }
-
-    const displayName = previewUser.name;
-    const email = previewUser.email;
-
-    return (
-      <div className="care-app-shell">
-        {!role ? (
-          <RoleSelectPage
-            userName={displayName}
-            onChooseRole={(next) => {
-              saveRole(PREVIEW_UID, next);
-              setRole(next);
-            }}
-            onSignOut={handleSignOut}
-          />
-        ) : (
-          <CareFeedingApp
-            role={role}
-            userName={displayName}
-            userEmail={email}
-            previewMode
-            getIdToken={getIdToken}
-            onRoleChange={(nextRole) => {
-              saveRole(PREVIEW_UID, nextRole);
-              setRole(nextRole);
-            }}
-            onSignOut={handleSignOut}
-          />
-        )}
       </div>
     );
   }
