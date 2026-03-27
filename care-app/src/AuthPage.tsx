@@ -8,6 +8,7 @@ import {
   signInWithEmailAndPassword,
   signInWithPopup,
   updateProfile,
+  type User,
 } from "firebase/auth";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -85,7 +86,12 @@ function mapFirebaseError(raw: string): string {
   return "Something went wrong. Please try again.";
 }
 
-export default function AuthPage() {
+type AuthPageProps = {
+  /** Called after a successful sign-in so the parent can update immediately (avoids missed auth listener in some Next.js bundles). */
+  onSignedIn?: (user: User) => void;
+};
+
+export default function AuthPage({ onSignedIn }: AuthPageProps) {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -130,8 +136,10 @@ export default function AuthPage() {
       if (mode === "signup") {
         const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
         await updateProfile(cred.user, { displayName: trimmedName });
+        onSignedIn?.(cred.user);
       } else {
-        await signInWithEmailAndPassword(auth, trimmedEmail, password);
+        const cred = await signInWithEmailAndPassword(auth, trimmedEmail, password);
+        onSignedIn?.(cred.user);
       }
     } catch (err: unknown) {
       setError(mapFirebaseError(firebaseErrorFingerprint(err)));
@@ -146,7 +154,8 @@ export default function AuthPage() {
     try {
       const auth = getClientAuth();
       const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
+      const cred = await signInWithPopup(auth, provider);
+      onSignedIn?.(cred.user);
     } catch (err: unknown) {
       setError(mapFirebaseError(firebaseErrorFingerprint(err)));
     } finally {

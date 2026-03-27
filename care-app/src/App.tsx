@@ -64,13 +64,15 @@ export default function App() {
   }, [user]);
 
   const handleSignOut = async () => {
+    clearRoleStorage();
     try {
       const auth = getClientAuth();
       await signOut(auth);
     } catch {
-      /* ignore */
+      /* still clear UI if Firebase sign-out fails */
     }
-    clearRoleStorage();
+    setUser(null);
+    setRole(undefined);
   };
 
   if (!authReady) {
@@ -84,7 +86,12 @@ export default function App() {
   if (!user) {
     return (
       <div className="care-app-shell">
-        <AuthPage />
+        <AuthPage
+          onSignedIn={(u) => {
+            setUser(u);
+            setRole(loadRole(u.uid));
+          }}
+        />
       </div>
     );
   }

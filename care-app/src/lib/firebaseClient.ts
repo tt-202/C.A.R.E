@@ -3,8 +3,20 @@
 import { initializeApp, getApps, type FirebaseApp } from "firebase/app";
 import { getAuth, type Auth } from "firebase/auth";
 
+/** Shared across possible duplicate module instances from the bundler (fixes post-login UI not updating). */
+const GLOBAL_AUTH_KEY = "__CARE_FIREBASE_AUTH__" as const;
+
 let app: FirebaseApp | undefined;
 let auth: Auth | undefined;
+
+function getGlobalAuth(): Auth | undefined {
+  if (typeof globalThis === "undefined") return undefined;
+  return (globalThis as Record<string, unknown>)[GLOBAL_AUTH_KEY] as Auth | undefined;
+}
+
+function setGlobalAuth(next: Auth): void {
+  (globalThis as Record<string, unknown>)[GLOBAL_AUTH_KEY] = next;
+}
 
 /** True when the minimum Firebase web env vars are set (you can run real sign-in). */
 export function isFirebaseConfigured(): boolean {
@@ -18,6 +30,11 @@ export function isFirebaseConfigured(): boolean {
 export function getClientAuth(): Auth {
   if (typeof window === "undefined") {
     throw new Error("Firebase Auth is only available in the browser");
+  }
+  const existing = getGlobalAuth();
+  if (existing) {
+    auth = existing;
+    return existing;
   }
   if (!auth) {
     const config = {
@@ -35,6 +52,7 @@ export function getClientAuth(): Auth {
     }
     app = getApps().length ? getApps()[0]! : initializeApp(config);
     auth = getAuth(app);
+    setGlobalAuth(auth);
   }
   return auth;
 }
