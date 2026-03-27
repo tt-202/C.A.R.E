@@ -31,18 +31,56 @@ export type AuthUser = {
   role?: UserRole;
 };
 
-function mapFirebaseError(message: string): string {
-  if (message.includes("auth/invalid-credential") || message.includes("auth/wrong-password")) {
+/** Firebase Auth errors expose `code` (e.g. auth/invalid-api-key); message alone often omits it. */
+function firebaseErrorFingerprint(err: unknown): string {
+  if (typeof err === "object" && err !== null && "code" in err) {
+    const code = String((err as { code: string }).code);
+    const message = "message" in err ? String((err as { message?: string }).message ?? "") : "";
+    return `${code} ${message}`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
+function mapFirebaseError(raw: string): string {
+  if (raw.includes("Firebase client is not configured") || raw.includes("NEXT_PUBLIC_FIREBASE")) {
+    return "App is missing Firebase settings. Add NEXT_PUBLIC_FIREBASE_API_KEY, AUTH_DOMAIN, and PROJECT_ID in .env.local (local) or in Vercel → Settings → Environment Variables, then redeploy.";
+  }
+  if (
+    raw.includes("auth/invalid-credential") ||
+    raw.includes("auth/wrong-password") ||
+    raw.includes("auth/user-not-found")
+  ) {
     return "Email or password is not correct. Try again.";
   }
-  if (message.includes("auth/email-already-in-use")) {
+  if (raw.includes("auth/email-already-in-use")) {
     return "That email already has an account. Try logging in.";
   }
-  if (message.includes("auth/weak-password")) {
+  if (raw.includes("auth/weak-password")) {
     return "Use a stronger password (at least 6 characters).";
   }
-  if (message.includes("auth/popup-closed-by-user")) {
+  if (raw.includes("auth/invalid-email")) {
+    return "That email address doesn’t look valid.";
+  }
+  if (raw.includes("auth/popup-closed-by-user") || raw.includes("auth/cancelled-popup-request")) {
     return "Sign-in was cancelled.";
+  }
+  if (raw.includes("auth/operation-not-allowed")) {
+    return "That sign-in method is turned off in Firebase. In Firebase Console → Authentication → Sign-in method, enable Email/Password and/or Google.";
+  }
+  if (raw.includes("auth/unauthorized-domain")) {
+    return "This site’s domain is not allowed for Firebase Auth. In Firebase Console → Authentication → Settings → Authorized domains, add this host (e.g. your-app.vercel.app and localhost).";
+  }
+  if (raw.includes("auth/invalid-api-key") || raw.includes("auth/api-key-not-valid")) {
+    return "Firebase API key is missing or wrong. Check NEXT_PUBLIC_FIREBASE_* matches your Firebase project.";
+  }
+  if (raw.includes("auth/network-request-failed")) {
+    return "Could not reach Firebase. Check your network and try again.";
+  }
+  if (raw.includes("auth/too-many-requests")) {
+    return "Too many attempts. Wait a few minutes and try again.";
+  }
+  if (raw.includes("auth/user-disabled")) {
+    return "This account has been disabled.";
   }
   return "Something went wrong. Please try again.";
 }
@@ -96,8 +134,7 @@ export default function AuthPage() {
         await signInWithEmailAndPassword(auth, trimmedEmail, password);
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Error";
-      setError(mapFirebaseError(message));
+      setError(mapFirebaseError(firebaseErrorFingerprint(err)));
     } finally {
       setBusy(false);
     }
@@ -111,8 +148,7 @@ export default function AuthPage() {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Error";
-      setError(mapFirebaseError(message));
+      setError(mapFirebaseError(firebaseErrorFingerprint(err)));
     } finally {
       setBusy(false);
     }
