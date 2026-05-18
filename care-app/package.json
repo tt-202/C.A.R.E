@@ -9,9 +9,14 @@
     "build": "node scripts/prisma-generate.cjs && next build",
     "start": "next start",
     "lint": "eslint .",
-    "postinstall": "node scripts/prisma-generate.cjs"
+    "postinstall": "node scripts/prisma-generate.cjs",
+    "cap:sync": "cap sync",
+    "cap:ios": "cap open ios"
   },
   "dependencies": {
+    "@capacitor/cli": "^8.3.0",
+    "@capacitor/core": "^8.3.0",
+    "@capacitor/ios": "^8.3.0",
     "@fontsource-variable/geist": "^5.2.8",
     "@prisma/client": "^6.19.0",
     "@radix-ui/react-progress": "^1.1.8",

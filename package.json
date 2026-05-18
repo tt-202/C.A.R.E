@@ -1,0 +1,8 @@
+{
+  "name": "c-a-r-e",
+  "private": true,
+  "scripts": {
+    "cap:ios": "npm run cap:ios --prefix care-app",
+    "cap:sync": "npm run cap:sync --prefix care-app"
+  }
+}

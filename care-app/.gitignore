@@ -12,6 +12,7 @@ dist
 dist-ssr
 .next
 *.local
+*.tsbuildinfo
 
 # Env files (never commit secrets — keep only the example in git)
 .env

@@ -20,6 +20,8 @@ import {
   loadMealHistory,
   saveMealHistory,
 } from "./mealHistoryStorage";
+import { isRobotControlEnabled, sendRobotCommand } from "@/lib/robotClient";
+import type { RobotCommandPayload, RobotCommandType } from "@/lib/robot";
 
 /** Four plate sections: numbered 1–4 for the user; labels for caregiver. */
 const PLATE_SECTIONS = [
@@ -78,6 +80,18 @@ export default function CareFeedingApp({
   const mealIdRef = useRef<string | null>(null);
   const getIdTokenRef = useRef(getIdToken);
   const biteInFlight = useRef(false);
+
+  const queueRobot = useCallback(
+    async (cmd: RobotCommandType, payload?: RobotCommandPayload) => {
+      if (previewMode || !isRobotControlEnabled()) return;
+      try {
+        await sendRobotCommand(getIdTokenRef.current, cmd, payload);
+      } catch {
+        console.warn("[robot]", cmd, "request failed");
+      }
+    },
+    [previewMode],
+  );
 
   mealTimeRef.current = mealTime;
   getIdTokenRef.current = getIdToken;
@@ -192,6 +206,7 @@ export default function CareFeedingApp({
       if (!res.ok) throw new Error("bite failed");
       const data = (await res.json()) as { bitesTotal: number };
       setBitesCompleted(data.bitesTotal);
+      void queueRobot("next_bite", { sectionNum: sec, mealId: mid });
     } catch {
       biteSectionStackRef.current = prev;
       setBiteSectionStack(prev);
@@ -200,7 +215,7 @@ export default function CareFeedingApp({
     } finally {
       biteInFlight.current = false;
     }
-  }, [previewMode]);
+  }, [previewMode, queueRobot]);
 
   const startSession = async () => {
     setApiError(null);
@@ -240,7 +255,10 @@ export default function CareFeedingApp({
     setSessionActive(true);
   };
 
-  const pauseSession = () => setSessionActive(false);
+  const pauseSession = () => {
+    setSessionActive(false);
+    void queueRobot("pause");
+  };
 
   const finishMealOnServer = async () => {
     setApiError(null);
@@ -280,6 +298,7 @@ export default function CareFeedingApp({
     if (mealStartedAtRef.current !== null) {
       await recordBite();
     }
+    void queueRobot("stop");
     await finishMealOnServer();
   };
 
@@ -287,6 +306,7 @@ export default function CareFeedingApp({
     if (mealStartedAtRef.current !== null) {
       await recordBite();
     }
+    void queueRobot("stop");
     await finishMealOnServer();
   };
 

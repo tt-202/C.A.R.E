@@ -1,0 +1,9 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Robot commands are created only via Firebase Admin (Vercel API). Jetson uses a service account.
+    match /robots/{robotId}/commands/{commandId} {
+      allow read, write: if false;
+    }
+  }
+}

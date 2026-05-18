@@ -1,0 +1,3 @@
+firebase-admin>=6.5.0
+# Install when hardware is wired (match Elephant Robotics docs for your firmware):
+# pymycobot>=3.9.0
