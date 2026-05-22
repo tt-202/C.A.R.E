@@ -43,7 +43,20 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<UserRole | undefined>(undefined);
   const [authReady, setAuthReady] = useState(false);
-  const [careProfile, setCareProfile] = useState<CareProfile | null>(null);
+  const [careProfile, setCareProfile] = useState<CareProfile | null>(() => {
+    try {
+      const auth = getClientAuth();
+      const currentUser = auth.currentUser;
+  
+      if (!currentUser) return null;
+  
+      return loadCareProfile(currentUser.uid);
+    } catch {
+      return null;
+    }
+  });
+
+
 
   useEffect(() => {
     let auth;
