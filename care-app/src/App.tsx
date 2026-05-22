@@ -39,6 +39,10 @@ function clearRoleStorage() {
   localStorage.removeItem(ROLE_KEY);
 }
 
+function cachedProfileForUser(uid: string): CareProfile | null {
+  return loadCareProfile(uid);
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<UserRole | undefined>(undefined);
@@ -70,6 +74,7 @@ export default function App() {
       setUser(u);
       if (u) {
         setRole(loadRole(u.uid));
+        setCareProfile(cachedProfileForUser(u.uid));
       } else {
         setRole(undefined);
         clearRoleStorage();
@@ -83,8 +88,6 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    const cached = loadCareProfile(user.uid);
-    if (cached) setCareProfile(cached);
 
     let cancelled = false;
     (async () => {
@@ -150,6 +153,7 @@ export default function App() {
           onSignedIn={(u) => {
             setUser(u);
             setRole(loadRole(u.uid));
+            setCareProfile(cachedProfileForUser(u.uid));
           }}
         />
       </div>
