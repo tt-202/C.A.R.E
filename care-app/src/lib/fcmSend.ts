@@ -1,0 +1,64 @@
+import { getMessaging, type MulticastMessage } from "firebase-admin/messaging";
+import { getAdminApp } from "@/lib/firebaseAdmin";
+import { listFcmTokens, removeFcmToken } from "@/lib/fcmTokensFirestore";
+
+export type PushPayload = {
+  title: string;
+  body: string;
+  /** Opens this path when the notification is clicked (web). */
+  link?: string;
+  tag?: string;
+};
+
+function getAdminMessaging() {
+  getAdminApp();
+  return getMessaging();
+}
+
+export async function sendPushToUser(
+  userId: string,
+  payload: PushPayload,
+): Promise<{ sent: number; failed: number }> {
+  const tokens = await listFcmTokens(userId);
+  if (tokens.length === 0) return { sent: 0, failed: 0 };
+
+  const link = payload.link ?? "/";
+  const message: MulticastMessage = {
+    tokens,
+    notification: {
+      title: payload.title,
+      body: payload.body,
+    },
+    webpush: {
+      notification: {
+        title: payload.title,
+        body: payload.body,
+        tag: payload.tag,
+      },
+      fcmOptions: { link },
+    },
+  };
+
+  const res = await getAdminMessaging().sendEachForMulticast(message);
+  let sent = 0;
+  let failed = 0;
+
+  await Promise.all(
+    res.responses.map(async (r, i) => {
+      if (r.success) {
+        sent += 1;
+        return;
+      }
+      failed += 1;
+      const code = r.error?.code;
+      if (
+        code === "messaging/invalid-registration-token" ||
+        code === "messaging/registration-token-not-registered"
+      ) {
+        await removeFcmToken(userId, tokens[i]!);
+      }
+    }),
+  );
+
+  return { sent, failed };
+}

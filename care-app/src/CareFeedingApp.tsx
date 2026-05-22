@@ -28,13 +28,20 @@ import {
   normalizeMealSchedule,
   type MealSchedule,
 } from "@/lib/mealSchedule";
-import { saveMealSchedule } from "@/lib/saveCareProfile";
+import { formatProfileSaveError, saveMealSchedule } from "@/lib/saveCareProfile";
+import { notifyCaregiverMealFinished } from "@/lib/notifyCaregiver";
+import { useCaregiverMealAlerts } from "@/hooks/useCaregiverMealAlerts";
 import {
+  buildTestReminderPayload,
   getNotificationPermission,
+  notificationBlockedHelp,
   requestMealReminderPermission,
   sendTestMealNotification,
   useMealReminders,
 } from "@/hooks/useMealReminders";
+import { useFcmPush } from "@/hooks/useFcmPush";
+import { isFcmConfigured } from "@/lib/firebasePublicConfig";
+import { sendTestPushFromServer } from "@/lib/fcmRegisterApi";
 
 /** Four plate sections: numbered 1–4 for the user; labels for caregiver. */
 const PLATE_SECTIONS = [
@@ -102,6 +109,7 @@ export default function CareFeedingApp({
   const [biteSectionStack, setBiteSectionStack] = useState<SectionNum[]>([]);
   const [mealHistory, setMealHistory] = useState<MealHistoryEntry[]>([]);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [doneMessage, setDoneMessage] = useState<string | null>(null);
   const [startBusy, setStartBusy] = useState(false);
 
   const mealStartedAtRef = useRef<number | null>(null);
@@ -141,7 +149,7 @@ export default function CareFeedingApp({
     plannedMealTimeRef.current = formatPlannedMealTime(slot.label, slot.time);
   }, [mealSchedule]);
 
-  const handleMealReminder = useCallback((payload: { body: string }) => {
+  const handleInAppAlert = useCallback((payload: { body: string }) => {
     setActiveReminder(payload.body);
     window.setTimeout(() => setActiveReminder(null), 60_000);
   }, []);
@@ -150,8 +158,30 @@ export default function CareFeedingApp({
     schedule: mealSchedule,
     careRecipientName: careRecipientName ?? "User",
     enabled: !previewMode && !isUser,
-    onReminder: handleMealReminder,
+    getIdToken,
+    onReminder: handleInAppAlert,
   });
+
+  useFcmPush({
+    enabled: !previewMode && Boolean(profileUid),
+    profileUid,
+    role,
+    getIdToken,
+    onForegroundMessage: (body) => handleInAppAlert({ body }),
+  });
+
+  useCaregiverMealAlerts({
+    profileUid,
+    enabled: !previewMode && !isUser,
+    getIdToken,
+    onAlert: handleInAppAlert,
+  });
+
+  useEffect(() => {
+    if (!previewMode && !isUser) {
+      void requestMealReminderPermission();
+    }
+  }, [previewMode, isUser]);
 
   const saveReminderTimes = async () => {
     setScheduleMessage(null);
@@ -167,7 +197,7 @@ export default function CareFeedingApp({
     }
     setScheduleBusy(true);
     const ok = await requestMealReminderPermission();
-    const saved = await saveMealSchedule(
+    const result = await saveMealSchedule(
       profileUid,
       getIdTokenRef.current,
       careRecipientName,
@@ -175,20 +205,22 @@ export default function CareFeedingApp({
       mealSchedule,
     );
     setScheduleBusy(false);
-    if (saved) {
+    if (result.ok) {
       onMealScheduleSaved?.(normalizeMealSchedule(mealSchedule));
       const perm = getNotificationPermission();
       setScheduleMessage(
         ok
-          ? "Reminder times saved. Keep this page open around meal time for alerts (or check the yellow banner)."
+          ? isFcmConfigured()
+            ? "Reminder times saved. Push alerts are enabled (15 min before meals, even when the tab is in the background)."
+            : "Reminder times saved. You'll get alerts 15 minutes before each meal — keep this page open (or watch the yellow banner)."
           : perm === "denied"
-            ? "Times saved. Notifications are blocked — enable them in browser site settings, then tap Test notification."
+            ? `Times saved. ${notificationBlockedHelp()}`
             : perm === "unsupported"
               ? "Times saved. This browser does not support notifications; use Chrome/Safari on desktop."
               : "Times saved. Tap Allow when asked, or use Test notification below.",
       );
     } else {
-      setApiError("Could not save reminder times. Check your connection.");
+      setApiError(formatProfileSaveError(result));
     }
   };
 
@@ -358,9 +390,40 @@ export default function CareFeedingApp({
     setSessionActive(true);
   };
 
+  const notifyCaregiverIfUserFinished = useCallback(
+    async (bitesTotal: number, plannedMealTime: string, hadActiveMeal: boolean) => {
+      if (!isUser || previewMode) return;
+      if (!hadActiveMeal && bitesTotal < 1) {
+        setDoneMessage("Tap a plate section (1–4) at least once before Done to record a meal.");
+        return;
+      }
+      setDoneMessage(null);
+      const result = await notifyCaregiverMealFinished(getIdTokenRef.current, {
+        careRecipientName: careRecipientName ?? "User",
+        caregiverName: caregiverName ?? "Caregiver",
+        bitesTotal,
+        plannedMealTime,
+      });
+      if (result.ok) {
+        setDoneMessage(
+          `${caregiverName ?? "Caregiver"} notified. Open the Caregiver screen on their device (or another tab) with notifications allowed.`,
+        );
+      } else {
+        setApiError(`Could not notify caregiver: ${result.error}`);
+      }
+    },
+    [isUser, previewMode, careRecipientName, caregiverName],
+  );
+
   const finishMealOnServer = async () => {
     setApiError(null);
+    setDoneMessage(null);
     setSessionActive(false);
+    const bitesTotal = Math.max(biteSectionStackRef.current.length, bitesCompleted);
+    const plannedMealTime = plannedMealTimeRef.current;
+    const hadActiveMeal =
+      mealStartedAtRef.current !== null || mealIdRef.current !== null || bitesTotal > 0;
+
     if (previewMode) {
       finalizeMealLocal();
       return;
@@ -373,7 +436,10 @@ export default function CareFeedingApp({
     biteSectionStackRef.current = [];
     setBitesCompleted(0);
 
-    if (!mid) return;
+    if (!mid) {
+      await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime, hadActiveMeal);
+      return;
+    }
     try {
       const token = await getIdTokenRef.current();
       const res = await fetch(`/api/meals/${mid}/stop`, {
@@ -382,13 +448,15 @@ export default function CareFeedingApp({
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ plannedMealTime: plannedMealTimeRef.current }),
+        body: JSON.stringify({ plannedMealTime }),
       });
       if (!res.ok) throw new Error("stop failed");
       await loadHistory();
+      await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime, hadActiveMeal);
     } catch {
       setApiError("Could not save this meal. Your next sync may show partial data.");
       await loadHistory();
+      await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime, hadActiveMeal);
     }
   };
 
@@ -599,6 +667,11 @@ export default function CareFeedingApp({
                 <Square className="mr-2 h-6 w-6" />
                 Done
               </Button>
+              {doneMessage ? (
+                <p className="col-span-full text-center text-base font-medium text-amber-100" role="status">
+                  {doneMessage}
+                </p>
+              ) : null}
             </section>
 
             <div className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] p-6 shadow-lg">
@@ -655,10 +728,13 @@ export default function CareFeedingApp({
                 Meal reminders
               </h2>
               <p className="text-center text-base font-medium text-amber-100/90">
-                Set when to remind you for{" "}
-                <span className="font-semibold text-white">{careRecipientName ?? "the user"}</span>
-                &apos;s meals. Keep this tab open at those times (phone browsers often block background
-                alerts).
+                Set meal times for{" "}
+                <span className="font-semibold text-white">{careRecipientName ?? "the user"}</span>.
+                You&apos;ll get a notification <span className="font-semibold text-white">15 minutes before</span>{" "}
+                each meal, and another when they tap <span className="font-semibold text-white">Done</span>.
+                {isFcmConfigured()
+                  ? "Firebase push is on — allow notifications when asked. Background alerts use your saved meal times."
+                  : "Add NEXT_PUBLIC_FIREBASE_VAPID_KEY for background push, or keep this tab open for in-app alerts."}
               </p>
 
               <div className="space-y-3">
@@ -703,12 +779,39 @@ export default function CareFeedingApp({
                 variant="outline"
                 className="h-12 w-full rounded-2xl border-2 border-amber-300/60 bg-amber-100/90 text-base font-semibold text-stone-900 hover:bg-amber-50"
                 onClick={async () => {
+                  const test = buildTestReminderPayload(careRecipientName ?? "the user");
+                  handleInAppAlert({ body: test.body });
+
+                  if (isFcmConfigured()) {
+                    await requestMealReminderPermission();
+                    const fcm = await sendTestPushFromServer(getIdToken);
+                    if (fcm.ok && (fcm.sent ?? 0) > 0) {
+                      setScheduleMessage(
+                        "FCM test push sent — check your phone or computer notification center.",
+                      );
+                      return;
+                    }
+                    if (fcm.error) {
+                      setScheduleMessage(fcm.error);
+                      return;
+                    }
+                  }
+
                   const granted = await requestMealReminderPermission();
-                  if (granted && sendTestMealNotification(careRecipientName ?? "the user")) {
-                    setScheduleMessage("Test notification sent — check your system tray or phone banner.");
+                  const pushed = sendTestMealNotification(careRecipientName ?? "the user");
+                  if (granted && pushed) {
+                    setScheduleMessage(
+                      "Test sent — check the yellow banner above and your system notification.",
+                    );
+                  } else if (getNotificationPermission() === "denied") {
+                    setScheduleMessage(notificationBlockedHelp());
+                  } else if (getNotificationPermission() === "unsupported") {
+                    setScheduleMessage(
+                      "This browser cannot show system notifications. Use the yellow banner on this page for reminders.",
+                    );
                   } else {
                     setScheduleMessage(
-                      "Could not send test. Allow notifications for this site in browser settings.",
+                      "Yellow banner test shown above. Tap Allow if the browser asks, then try again for a system notification.",
                     );
                   }
                 }}

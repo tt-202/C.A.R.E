@@ -1,11 +1,17 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import {
+  REMINDER_LEAD_MINUTES,
+  REMINDER_WINDOW_MINUTES,
+} from "@/lib/mealReminderPush";
 import { MEAL_SLOTS, type MealSchedule } from "@/lib/mealSchedule";
+import { isFcmConfigured } from "@/lib/firebasePublicConfig";
+import { triggerMealReminderPush } from "@/lib/fcmRegisterApi";
+
+export { REMINDER_LEAD_MINUTES } from "@/lib/mealReminderPush";
 
 const POLL_MS = 15_000;
-/** Fire once per meal if we're within this many minutes after the scheduled time. */
-const REMINDER_WINDOW_MINUTES = 3;
 
 function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
@@ -26,8 +32,26 @@ type Options = {
   schedule: MealSchedule;
   careRecipientName: string;
   enabled: boolean;
+  getIdToken?: () => Promise<string>;
   onReminder?: (payload: MealReminderPayload) => void;
 };
+
+export function showBrowserNotification(
+  title: string,
+  body: string,
+  tag: string,
+): boolean {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") {
+    return false;
+  }
+  try {
+    new Notification(title, { body, tag });
+    return true;
+  } catch {
+    console.info(`[notification] ${title}: ${body}`);
+    return false;
+  }
+}
 
 function dispatchReminder(
   slotKey: string,
@@ -38,23 +62,20 @@ function dispatchReminder(
   onReminder?: (payload: MealReminderPayload) => void,
 ) {
   const name = careRecipientName || "your loved one";
-  const title = `C.A.R.E — ${slotLabel} time`;
-  const body = `It's ${time}. Time for ${name}'s ${slotLabel.toLowerCase()}.`;
+  const title = `C.A.R.E — ${slotLabel} in ${REMINDER_LEAD_MINUTES} min`;
+  const body = `${name}'s ${slotLabel.toLowerCase()} is at ${time}. Get ready — ${REMINDER_LEAD_MINUTES} minutes to go.`;
 
   onReminder?.({ slotKey, title, body });
-
-  if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-    try {
-      new Notification(title, { body, tag: fireKey });
-    } catch {
-      console.info(`[meal reminder] ${title}: ${body}`);
-    }
-  } else {
-    console.info(`[meal reminder] ${title}: ${body}`);
-  }
+  showBrowserNotification(title, body, fireKey);
 }
 
-export function useMealReminders({ schedule, careRecipientName, enabled, onReminder }: Options) {
+export function useMealReminders({
+  schedule,
+  careRecipientName,
+  enabled,
+  getIdToken,
+  onReminder,
+}: Options) {
   const firedRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
@@ -68,9 +89,10 @@ export function useMealReminders({ schedule, careRecipientName, enabled, onRemin
       for (const slot of MEAL_SLOTS) {
         const time = schedule[slot.field];
         const target = timeToMinutes(time);
-        const fireKey = `${day}:${slot.key}`;
+        const remindAt = target - REMINDER_LEAD_MINUTES;
+        const fireKey = `${day}:${slot.key}:early`;
         if (firedRef.current[fireKey]) continue;
-        if (nowMins < target || nowMins >= target + REMINDER_WINDOW_MINUTES) continue;
+        if (nowMins < remindAt || nowMins >= remindAt + REMINDER_WINDOW_MINUTES) continue;
 
         firedRef.current[fireKey] = "1";
         dispatchReminder(
@@ -81,6 +103,14 @@ export function useMealReminders({ schedule, careRecipientName, enabled, onRemin
           fireKey,
           onReminder,
         );
+        if (isFcmConfigured() && getIdToken) {
+          void triggerMealReminderPush(getIdToken, {
+            slotKey: slot.key,
+            slotLabel: slot.label,
+            time,
+            careRecipientName,
+          });
+        }
       }
     };
 
@@ -95,7 +125,7 @@ export function useMealReminders({ schedule, careRecipientName, enabled, onRemin
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [schedule, careRecipientName, enabled, onReminder]);
+  }, [schedule, careRecipientName, enabled, getIdToken, onReminder]);
 }
 
 export function getNotificationPermission(): NotificationPermission | "unsupported" {
@@ -112,16 +142,40 @@ export async function requestMealReminderPermission(): Promise<boolean> {
 }
 
 export function sendTestMealNotification(careRecipientName: string): boolean {
-  if (typeof Notification === "undefined" || Notification.permission !== "granted") {
-    return false;
+  const name = careRecipientName || "the user";
+  return showBrowserNotification(
+    "C.A.R.E — Test reminder",
+    `Notifications work. You'll get alerts ${REMINDER_LEAD_MINUTES} minutes before ${name}'s meals.`,
+    "care-test",
+  );
+}
+
+/** User-facing steps when the browser has blocked Notification.permission. */
+export function notificationBlockedHelp(): string {
+  const host =
+    typeof window !== "undefined" ? window.location.hostname : "this site";
+  const isLocal = host === "localhost" || host === "127.0.0.1";
+
+  if (isLocal) {
+    return (
+      "Notifications are blocked for localhost. In Chrome: click the icon left of the address bar " +
+      "(tune or lock) → Site settings → Notifications → Allow, then reload this page. " +
+      "In Safari: Safari → Settings → Websites → Notifications → select localhost → Allow, then reload. " +
+      "On Mac, also check System Settings → Notifications → your browser → allow alerts."
+    );
   }
-  try {
-    new Notification("C.A.R.E — Test reminder", {
-      body: `Notifications work. Reminders will alert you for ${careRecipientName || "the user"}'s meals.`,
-      tag: "care-test",
-    });
-    return true;
-  } catch {
-    return false;
-  }
+
+  return (
+    `Notifications are blocked for ${host}. Open your browser’s site settings for this page, ` +
+    "set Notifications to Allow, reload, then tap Test notification again."
+  );
+}
+
+export function buildTestReminderPayload(careRecipientName: string): MealReminderPayload {
+  const name = careRecipientName || "the user";
+  return {
+    slotKey: "test",
+    title: "C.A.R.E — Test reminder",
+    body: `Test OK. You'll get alerts ${REMINDER_LEAD_MINUTES} minutes before ${name}'s meals (yellow banner here + phone banner if allowed).`,
+  };
 }

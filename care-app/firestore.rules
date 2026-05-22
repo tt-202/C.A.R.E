@@ -5,5 +5,16 @@ service cloud.firestore {
     match /robots/{robotId}/commands/{commandId} {
       allow read, write: if false;
     }
+    // Meal-finished alerts for caregivers: written only via Firebase Admin (Vercel API).
+    match /users/{userId}/careAlerts/{docId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false;
+    }
+    match /users/{userId}/fcmTokens/{docId} {
+      allow read, write: if false;
+    }
+    match /users/{userId}/reminderSent/{docId} {
+      allow read, write: if false;
+    }
   }
 }

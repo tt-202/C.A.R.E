@@ -26,7 +26,7 @@ export function parseServiceAccountJson(raw: string): Record<string, unknown> {
   return serviceAccount;
 }
 
-function getAdminApp(): App {
+export function getAdminApp(): App {
   if (adminApp) return adminApp;
   const existing = getApps()[0];
   if (existing) {

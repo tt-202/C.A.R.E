@@ -2,12 +2,14 @@
 
 import { initializeApp, getApps, type FirebaseApp } from "firebase/app";
 import { getAuth, type Auth } from "firebase/auth";
+import { getFirestore, type Firestore } from "firebase/firestore";
 
 /** Shared across possible duplicate module instances from the bundler (fixes post-login UI not updating). */
 const GLOBAL_AUTH_KEY = "__CARE_FIREBASE_AUTH__" as const;
 
 let app: FirebaseApp | undefined;
 let auth: Auth | undefined;
+let firestore: Firestore | undefined;
 
 function getGlobalAuth(): Auth | undefined {
   if (typeof globalThis === "undefined") return undefined;
@@ -55,4 +57,19 @@ export function getClientAuth(): Auth {
     setGlobalAuth(auth);
   }
   return auth;
+}
+
+export function getClientFirestore(): Firestore {
+  if (typeof window === "undefined") {
+    throw new Error("Firestore is only available in the browser");
+  }
+  getClientAuth();
+  if (!firestore) {
+    const firebaseApp = app ?? getApps()[0];
+    if (!firebaseApp) {
+      throw new Error("Firebase app is not initialized");
+    }
+    firestore = getFirestore(firebaseApp);
+  }
+  return firestore;
 }
