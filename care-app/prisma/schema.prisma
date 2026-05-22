@@ -10,9 +10,16 @@ datasource db {
 model User {
   id          String   @id @default(cuid())
   firebaseUid String   @unique
-  email       String   @default("")
-  displayName String   @default("")
-  meals       Meal[]
+  email              String   @default("")
+  displayName        String   @default("")
+  /** Person receiving care (User role). */
+  careRecipientName  String   @default("")
+  /** Family or staff helping with meals (Caregiver role). */
+  caregiverName      String   @default("")
+  breakfastTime      String   @default("08:00")
+  lunchTime          String   @default("12:30")
+  dinnerTime         String   @default("18:00")
+  meals              Meal[]
   createdAt   DateTime @default(now())
 }
 

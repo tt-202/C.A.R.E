@@ -4,12 +4,18 @@ import { Button } from "@/components/ui/button";
 import type { UserRole } from "./AuthPage";
 
 type Props = {
-  userName: string;
+  careRecipientName: string;
+  caregiverName: string;
   onChooseRole: (role: UserRole) => void;
   onSignOut: () => void;
 };
 
-export default function RoleSelectPage({ userName, onChooseRole, onSignOut }: Props) {
+export default function RoleSelectPage({
+  careRecipientName,
+  caregiverName,
+  onChooseRole,
+  onSignOut,
+}: Props) {
   return (
     <div className="min-h-screen p-4 pb-12 md:flex md:items-center md:justify-center md:p-8">
       <div className="mx-auto w-full max-w-2xl">
@@ -17,8 +23,11 @@ export default function RoleSelectPage({ userName, onChooseRole, onSignOut }: Pr
           <p className="text-sm font-bold uppercase tracking-widest text-amber-200">C.A.R.E</p>
           <h1 className="mt-2 text-3xl font-bold text-white md:text-4xl">Who is using the app?</h1>
           <p className="mt-2 text-lg text-amber-100">
-            Hello, <span className="font-bold text-white">{userName}</span> — pick one section below.
+            User: <span className="font-bold text-white">{careRecipientName}</span>
+            {" · "}
+            Caregiver: <span className="font-bold text-white">{caregiverName}</span>
           </p>
+          <p className="mt-1 text-base text-amber-100/90">Pick who is using the app right now.</p>
         </header>
 
         <div className="flex flex-col gap-6 md:flex-row md:items-stretch">

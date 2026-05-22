@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { getClientAuth } from "@/lib/firebaseClient";
+import { saveCareProfile } from "@/lib/saveCareProfile";
 
 /**
  * High-contrast, warm cream fields — easier to see than light gray on white
@@ -93,7 +94,8 @@ type AuthPageProps = {
 
 export default function AuthPage({ onSignedIn }: AuthPageProps) {
   const [mode, setMode] = useState<"login" | "signup">("login");
-  const [name, setName] = useState("");
+  const [careRecipientName, setCareRecipientName] = useState("");
+  const [caregiverName, setCaregiverName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -105,8 +107,17 @@ export default function AuthPage({ onSignedIn }: AuthPageProps) {
     setError(null);
 
     const trimmedEmail = email.trim();
-    const trimmedName = name.trim();
+    const trimmedUserName = careRecipientName.trim();
+    const trimmedCaregiverName = caregiverName.trim();
 
+    if (!trimmedUserName) {
+      setError("Please enter the user name (person receiving care).");
+      return;
+    }
+    if (!trimmedCaregiverName) {
+      setError("Please enter the caregiver name.");
+      return;
+    }
     if (!trimmedEmail) {
       setError("Please enter your email.");
       return;
@@ -116,10 +127,6 @@ export default function AuthPage({ onSignedIn }: AuthPageProps) {
       return;
     }
     if (mode === "signup") {
-      if (!trimmedName) {
-        setError("Please enter your name.");
-        return;
-      }
       if (password !== confirmPassword) {
         setError("Passwords do not match. Try again.");
         return;
@@ -135,10 +142,22 @@ export default function AuthPage({ onSignedIn }: AuthPageProps) {
       const auth = getClientAuth();
       if (mode === "signup") {
         const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
-        await updateProfile(cred.user, { displayName: trimmedName });
+        await updateProfile(cred.user, { displayName: trimmedCaregiverName });
+        await saveCareProfile(
+          cred.user.uid,
+          () => cred.user.getIdToken(),
+          trimmedUserName,
+          trimmedCaregiverName,
+        );
         onSignedIn?.(cred.user);
       } else {
         const cred = await signInWithEmailAndPassword(auth, trimmedEmail, password);
+        await saveCareProfile(
+          cred.user.uid,
+          () => cred.user.getIdToken(),
+          trimmedUserName,
+          trimmedCaregiverName,
+        );
         onSignedIn?.(cred.user);
       }
     } catch (err: unknown) {
@@ -150,11 +169,27 @@ export default function AuthPage({ onSignedIn }: AuthPageProps) {
 
   const handleGoogle = async () => {
     setError(null);
+    const trimmedUserName = careRecipientName.trim();
+    const trimmedCaregiverName = caregiverName.trim();
+    if (!trimmedUserName) {
+      setError("Please enter the user name (person receiving care).");
+      return;
+    }
+    if (!trimmedCaregiverName) {
+      setError("Please enter the caregiver name.");
+      return;
+    }
     setBusy(true);
     try {
       const auth = getClientAuth();
       const provider = new GoogleAuthProvider();
       const cred = await signInWithPopup(auth, provider);
+      await saveCareProfile(
+        cred.user.uid,
+        () => cred.user.getIdToken(),
+        trimmedUserName,
+        trimmedCaregiverName,
+      );
       onSignedIn?.(cred.user);
     } catch (err: unknown) {
       setError(mapFirebaseError(firebaseErrorFingerprint(err)));
@@ -216,22 +251,41 @@ export default function AuthPage({ onSignedIn }: AuthPageProps) {
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-5">
-              {mode === "signup" && (
-                <div>
-                  <label htmlFor="auth-name" className="mb-2 block text-lg font-semibold text-stone-900">
-                    Your name
-                  </label>
-                  <Input
-                    id="auth-name"
-                    name="name"
-                    autoComplete="name"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="e.g. Alex Carter"
-                    className={authInputClass}
-                  />
-                </div>
-              )}
+              <div>
+                <label htmlFor="auth-user-name" className="mb-2 block text-lg font-semibold text-stone-900">
+                  User name
+                </label>
+                <p className="mb-2 text-sm font-medium text-stone-700">
+                  Person receiving care (using the User section of the app).
+                </p>
+                <Input
+                  id="auth-user-name"
+                  name="careRecipientName"
+                  autoComplete="name"
+                  value={careRecipientName}
+                  onChange={(e) => setCareRecipientName(e.target.value)}
+                  placeholder="e.g. Alex Carter"
+                  className={authInputClass}
+                />
+              </div>
+
+              <div>
+                <label htmlFor="auth-caregiver-name" className="mb-2 block text-lg font-semibold text-stone-900">
+                  Caregiver name
+                </label>
+                <p className="mb-2 text-sm font-medium text-stone-700">
+                  Family or staff helping with meals.
+                </p>
+                <Input
+                  id="auth-caregiver-name"
+                  name="caregiverName"
+                  autoComplete="name"
+                  value={caregiverName}
+                  onChange={(e) => setCaregiverName(e.target.value)}
+                  placeholder="e.g. Sam Carter"
+                  className={authInputClass}
+                />
+              </div>
 
               <div>
                 <label htmlFor="auth-email" className="mb-2 block text-lg font-semibold text-stone-900">

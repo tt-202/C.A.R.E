@@ -7,6 +7,13 @@ import CareFeedingApp from "./CareFeedingApp";
 import RoleSelectPage from "./RoleSelectPage";
 import type { UserRole } from "./AuthPage";
 import { getClientAuth } from "@/lib/firebaseClient";
+import {
+  clearCareProfileNames,
+  loadCareProfile,
+  saveCareProfile,
+  type CareProfile,
+} from "@/lib/careProfileStorage";
+import { normalizeMealSchedule } from "@/lib/mealSchedule";
 
 const ROLE_KEY = "care_role";
 
@@ -36,6 +43,7 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<UserRole | undefined>(undefined);
   const [authReady, setAuthReady] = useState(false);
+  const [careProfile, setCareProfile] = useState<CareProfile | null>(null);
 
   useEffect(() => {
     let auth;
@@ -52,11 +60,48 @@ export default function App() {
       } else {
         setRole(undefined);
         clearRoleStorage();
+        setCareProfile(null);
+        clearCareProfileNames();
       }
       setAuthReady(true);
     });
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const cached = loadCareProfile(user.uid);
+    if (cached) setCareProfile(cached);
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await user.getIdToken();
+        const res = await fetch("/api/profile", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as Partial<CareProfile>;
+        if (cancelled) return;
+        if (data.careRecipientName && data.caregiverName) {
+          const schedule = normalizeMealSchedule(data);
+          const next: CareProfile = {
+            uid: user.uid,
+            careRecipientName: data.careRecipientName,
+            caregiverName: data.caregiverName,
+            ...schedule,
+          };
+          setCareProfile(next);
+          saveCareProfile(next);
+        }
+      } catch {
+        /* keep cached profile */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   const getIdToken = useCallback(async () => {
     if (!user) throw new Error("Not signed in");
@@ -65,6 +110,7 @@ export default function App() {
 
   const handleSignOut = async () => {
     clearRoleStorage();
+    clearCareProfileNames();
     try {
       const auth = getClientAuth();
       await signOut(auth);
@@ -73,6 +119,7 @@ export default function App() {
     }
     setUser(null);
     setRole(undefined);
+    setCareProfile(null);
   };
 
   if (!authReady) {
@@ -96,14 +143,18 @@ export default function App() {
     );
   }
 
-  const displayName = user.displayName ?? user.email?.split("@")[0] ?? "User";
   const email = user.email ?? "";
+  const careRecipientName =
+    careProfile?.careRecipientName ?? user.displayName ?? user.email?.split("@")[0] ?? "User";
+  const caregiverName =
+    careProfile?.caregiverName ?? user.displayName ?? user.email?.split("@")[0] ?? "Caregiver";
 
   return (
     <div className="care-app-shell">
       {!role ? (
         <RoleSelectPage
-          userName={displayName}
+          careRecipientName={careRecipientName}
+          caregiverName={caregiverName}
           onChooseRole={(next) => {
             saveRole(user.uid, next);
             setRole(next);
@@ -113,8 +164,23 @@ export default function App() {
       ) : (
         <CareFeedingApp
           role={role}
-          userName={displayName}
+          careRecipientName={careRecipientName}
+          caregiverName={caregiverName}
           userEmail={email}
+          profileUid={user.uid}
+          initialMealSchedule={normalizeMealSchedule(careProfile)}
+          onMealScheduleSaved={(schedule) => {
+            setCareProfile((prev) =>
+              prev
+                ? { ...prev, ...schedule }
+                : {
+                    uid: user.uid,
+                    careRecipientName,
+                    caregiverName,
+                    ...schedule,
+                  },
+            );
+          }}
           getIdToken={getIdToken}
           onRoleChange={(nextRole) => {
             saveRole(user.uid, nextRole);

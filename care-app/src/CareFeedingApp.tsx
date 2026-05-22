@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Play,
-  Pause,
   Square,
   Clock,
   User,
@@ -22,6 +21,15 @@ import {
 } from "./mealHistoryStorage";
 import { isRobotControlEnabled, sendRobotCommand } from "@/lib/robotClient";
 import type { RobotCommandPayload, RobotCommandType } from "@/lib/robot";
+import {
+  activeMealSlot,
+  formatPlannedMealTime,
+  MEAL_SLOTS,
+  normalizeMealSchedule,
+  type MealSchedule,
+} from "@/lib/mealSchedule";
+import { saveMealSchedule } from "@/lib/saveCareProfile";
+import { requestMealReminderPermission, useMealReminders } from "@/hooks/useMealReminders";
 
 /** Four plate sections: numbered 1–4 for the user; labels for caregiver. */
 const PLATE_SECTIONS = [
@@ -35,8 +43,12 @@ type SectionNum = (typeof PLATE_SECTIONS)[number]["num"];
 
 type CareFeedingAppProps = {
   role: UserRole;
-  userName?: string;
+  careRecipientName?: string;
+  caregiverName?: string;
   userEmail?: string;
+  profileUid?: string;
+  initialMealSchedule?: MealSchedule;
+  onMealScheduleSaved?: (schedule: MealSchedule) => void;
   /** No API calls — meal history stays in this browser (for local preview without Firebase/DB). */
   previewMode?: boolean;
   getIdToken: () => Promise<string>;
@@ -53,13 +65,21 @@ const AUTO_BITE_INTERVAL_MS = 30_000;
 
 export default function CareFeedingApp({
   role,
-  userName,
+  careRecipientName,
+  caregiverName,
   userEmail,
+  profileUid,
+  initialMealSchedule,
+  onMealScheduleSaved,
   previewMode = false,
   getIdToken,
   onRoleChange,
   onSignOut,
 }: CareFeedingAppProps) {
+  const isUser = role === "user";
+  const welcomeName = isUser
+    ? (careRecipientName ?? "User")
+    : (caregiverName ?? "Caregiver");
   const [selectedSection, setSelectedSection] = useState<SectionNum>(2);
   const selectedSectionRef = useRef<SectionNum>(selectedSection);
   useEffect(() => {
@@ -68,7 +88,11 @@ export default function CareFeedingApp({
 
   const [sessionActive, setSessionActive] = useState(false);
   const [bitesCompleted, setBitesCompleted] = useState(0);
-  const [mealTime, setMealTime] = useState("12:00");
+  const [mealSchedule, setMealSchedule] = useState<MealSchedule>(() =>
+    normalizeMealSchedule(initialMealSchedule),
+  );
+  const [scheduleBusy, setScheduleBusy] = useState(false);
+  const [scheduleMessage, setScheduleMessage] = useState<string | null>(null);
   const [biteSectionStack, setBiteSectionStack] = useState<SectionNum[]>([]);
   const [mealHistory, setMealHistory] = useState<MealHistoryEntry[]>([]);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -76,7 +100,13 @@ export default function CareFeedingApp({
 
   const mealStartedAtRef = useRef<number | null>(null);
   const biteSectionStackRef = useRef<SectionNum[]>([]);
-  const mealTimeRef = useRef(mealTime);
+  const plannedMealTimeRef = useRef(
+    formatPlannedMealTime(
+      activeMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule)).label,
+      activeMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule)).time,
+    ),
+  );
+  const mealScheduleRef = useRef(mealSchedule);
   const mealIdRef = useRef<string | null>(null);
   const getIdTokenRef = useRef(getIdToken);
   const biteInFlight = useRef(false);
@@ -93,8 +123,57 @@ export default function CareFeedingApp({
     [previewMode],
   );
 
-  mealTimeRef.current = mealTime;
+  mealScheduleRef.current = mealSchedule;
   getIdTokenRef.current = getIdToken;
+
+  useEffect(() => {
+    setMealSchedule(normalizeMealSchedule(initialMealSchedule));
+  }, [initialMealSchedule]);
+
+  useEffect(() => {
+    const slot = activeMealSlot(new Date(), mealScheduleRef.current);
+    plannedMealTimeRef.current = formatPlannedMealTime(slot.label, slot.time);
+  }, [mealSchedule]);
+
+  useMealReminders({
+    schedule: mealSchedule,
+    careRecipientName: careRecipientName ?? "User",
+    enabled: !previewMode,
+  });
+
+  const saveReminderTimes = async () => {
+    setScheduleMessage(null);
+    setApiError(null);
+    if (previewMode) {
+      setScheduleMessage("Reminder times saved on this device (preview mode).");
+      onMealScheduleSaved?.(mealSchedule);
+      return;
+    }
+    if (!profileUid || !careRecipientName || !caregiverName) {
+      setApiError("Could not save reminder times.");
+      return;
+    }
+    setScheduleBusy(true);
+    const ok = await requestMealReminderPermission();
+    const saved = await saveMealSchedule(
+      profileUid,
+      getIdTokenRef.current,
+      careRecipientName,
+      caregiverName,
+      mealSchedule,
+    );
+    setScheduleBusy(false);
+    if (saved) {
+      onMealScheduleSaved?.(normalizeMealSchedule(mealSchedule));
+      setScheduleMessage(
+        ok
+          ? "Reminder times saved. You will get alerts at each meal time."
+          : "Reminder times saved. Allow notifications in your browser for alerts.",
+      );
+    } else {
+      setApiError("Could not save reminder times. Check your connection.");
+    }
+  };
 
   useEffect(() => {
     biteSectionStackRef.current = biteSectionStack;
@@ -158,7 +237,7 @@ export default function CareFeedingApp({
       durationMs,
       bitesTotal,
       bySection,
-      plannedMealTime: mealTimeRef.current,
+      plannedMealTime: plannedMealTimeRef.current,
     };
     setMealHistory((prev) => [entry, ...prev]);
     mealStartedAtRef.current = null;
@@ -171,10 +250,15 @@ export default function CareFeedingApp({
   const selectedMeta = PLATE_SECTIONS.find((s) => s.num === selectedSection) ?? PLATE_SECTIONS[1];
 
   const statusText = useMemo(() => {
-    if (mealStartedAtRef.current === null) return "Not started.";
-    if (!sessionActive) return "Paused. Press Start to continue or Stop to finish.";
+    if (isUser) {
+      if (mealStartedAtRef.current === null) {
+        return "Tap a plate section (1–4) to begin and count a bite.";
+      }
+      return "Meal in progress.";
+    }
+    if (mealStartedAtRef.current === null) return "Not started. Press Start to begin.";
     return "Counting bites...";
-  }, [sessionActive]);
+  }, [isUser]);
 
   const recordBite = useCallback(async () => {
     const sec = selectedSectionRef.current;
@@ -220,6 +304,8 @@ export default function CareFeedingApp({
   const startSession = async () => {
     setApiError(null);
     if (mealStartedAtRef.current === null) {
+      const slot = activeMealSlot(new Date(), mealScheduleRef.current);
+      plannedMealTimeRef.current = formatPlannedMealTime(slot.label, slot.time);
       if (previewMode) {
         mealStartedAtRef.current = Date.now();
         setBiteSectionStack([]);
@@ -235,7 +321,7 @@ export default function CareFeedingApp({
               Authorization: `Bearer ${token}`,
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({ plannedMealTime: mealTimeRef.current }),
+            body: JSON.stringify({ plannedMealTime: plannedMealTimeRef.current }),
           });
           if (!res.ok) throw new Error("start failed");
           const data = (await res.json()) as { mealId: string };
@@ -253,11 +339,6 @@ export default function CareFeedingApp({
       }
     }
     setSessionActive(true);
-  };
-
-  const pauseSession = () => {
-    setSessionActive(false);
-    void queueRobot("pause");
   };
 
   const finishMealOnServer = async () => {
@@ -284,7 +365,7 @@ export default function CareFeedingApp({
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ plannedMealTime: mealTimeRef.current }),
+        body: JSON.stringify({ plannedMealTime: plannedMealTimeRef.current }),
       });
       if (!res.ok) throw new Error("stop failed");
       await loadHistory();
@@ -292,14 +373,6 @@ export default function CareFeedingApp({
       setApiError("Could not save this meal. Your next sync may show partial data.");
       await loadHistory();
     }
-  };
-
-  const stopSession = async () => {
-    if (mealStartedAtRef.current !== null) {
-      await recordBite();
-    }
-    void queueRobot("stop");
-    await finishMealOnServer();
   };
 
   const emergencyStop = async () => {
@@ -310,13 +383,30 @@ export default function CareFeedingApp({
     await finishMealOnServer();
   };
 
+  const doneMeal = async () => {
+    void queueRobot("stop");
+    await finishMealOnServer();
+  };
+
+  const handleUserSectionSelect = async (num: SectionNum) => {
+    setSelectedSection(num);
+    selectedSectionRef.current = num;
+    setApiError(null);
+    if (mealStartedAtRef.current === null) {
+      await startSession();
+    }
+    if (mealStartedAtRef.current !== null) {
+      await recordBite();
+    }
+  };
+
   useEffect(() => {
-    if (!sessionActive) return;
+    if (isUser || !sessionActive) return;
     const id = window.setInterval(() => {
       void recordBite();
     }, AUTO_BITE_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [sessionActive, recordBite]);
+  }, [sessionActive, recordBite, isUser]);
 
   const clearHistory = async () => {
     if (!userEmail) return;
@@ -343,8 +433,6 @@ export default function CareFeedingApp({
     () => mealHistory.reduce((sum, m) => sum + m.bitesTotal, 0),
     [mealHistory]
   );
-
-  const isUser = role === "user";
 
   return (
     <div className="min-h-screen p-4 pb-10 text-zinc-900 md:p-8">
@@ -390,15 +478,20 @@ export default function CareFeedingApp({
           )}
 
           <h1 className="mt-4 text-3xl font-bold tracking-tight text-white md:text-4xl">Meal helper</h1>
-          {userName ? (
+          {welcomeName ? (
             <p className="mt-2 text-xl text-amber-100">
-              Welcome, <span className="font-bold text-white">{userName}</span>
+              Welcome, <span className="font-bold text-white">{welcomeName}</span>
             </p>
           ) : null}
-          <p className={`text-lg text-amber-100/95 ${userName ? "mt-1" : "mt-2"}`}>
+          {!isUser && careRecipientName ? (
+            <p className="mt-1 text-base text-amber-100/90">
+              Helping <span className="font-semibold text-white">{careRecipientName}</span>
+            </p>
+          ) : null}
+          <p className={`text-lg text-amber-100/95 ${welcomeName ? "mt-1" : "mt-2"}`}>
             {isUser
-              ? "Set meal time, start your meal, pick a plate section (1–4), and see your bites."
-              : "Pick food, set your meal time, and track bites—step by step."}
+              ? "Tap a plate section (1–4) for each bite, then press Done when finished."
+              : "Pick food, set breakfast/lunch/dinner reminder times, and track bites."}
           </p>
           {previewMode ? (
             <p className="mt-3 rounded-2xl border border-amber-300/40 bg-blue-950/50 px-4 py-2 text-base font-semibold text-amber-100">
@@ -418,58 +511,6 @@ export default function CareFeedingApp({
 
         {isUser ? (
           <>
-            <section aria-labelledby="user-meal-time">
-              <h2 id="user-meal-time" className="mb-3 text-center text-2xl font-bold text-amber-100">
-                Meal time
-              </h2>
-              <div className="rounded-2xl border-2 border-stone-600 bg-[#f5ebe0] p-5 shadow-md">
-                <label htmlFor="meal-time-user" className="flex items-center justify-center gap-2 text-lg font-bold text-stone-950">
-                  <Clock className="h-6 w-6" aria-hidden />
-                  Today&apos;s meal time
-                </label>
-                <Input
-                  id="meal-time-user"
-                  type="time"
-                  value={mealTime}
-                  onChange={(e) => setMealTime(e.target.value)}
-                  className="mt-4 h-16 rounded-2xl border-2 border-stone-600 bg-[#fffefb] text-center text-3xl font-bold tabular-nums text-stone-950 focus-visible:border-blue-800"
-                />
-              </div>
-            </section>
-
-            <section aria-labelledby="user-controls" className="grid grid-cols-3 gap-3">
-              <h2 id="user-controls" className="col-span-3 text-center text-2xl font-bold text-amber-100">
-                Session
-              </h2>
-              <Button
-                type="button"
-                disabled={startBusy}
-                className="h-16 rounded-2xl border-2 border-blue-950 bg-blue-900 text-lg font-semibold text-white hover:bg-blue-950 disabled:opacity-60"
-                onClick={() => void startSession()}
-              >
-                <Play className="mr-2 h-6 w-6" />
-                Start
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="h-16 rounded-2xl border-2 border-stone-600 bg-stone-200 text-lg font-semibold text-stone-900 hover:bg-stone-100"
-                onClick={pauseSession}
-              >
-                <Pause className="mr-2 h-6 w-6" />
-                Pause
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="h-16 rounded-2xl border-2 border-stone-600 bg-stone-200 text-lg font-semibold text-stone-900 hover:bg-stone-100"
-                onClick={() => void stopSession()}
-              >
-                <Square className="mr-2 h-6 w-6" />
-                Stop
-              </Button>
-            </section>
-
             <section aria-labelledby="user-plate">
               <h2 id="user-plate" className="mb-3 text-center text-2xl font-bold text-amber-100">
                 Choose food section
@@ -489,7 +530,7 @@ export default function CareFeedingApp({
                       <button
                         key={sec.num}
                         type="button"
-                        onClick={() => setSelectedSection(sec.num)}
+                        onClick={() => void handleUserSectionSelect(sec.num)}
                         className={`flex min-h-[6.5rem] flex-col items-center justify-center rounded-2xl border-4 text-center transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-200 ${
                           active
                             ? "border-blue-950 bg-blue-900 text-white shadow-lg"
@@ -512,18 +553,30 @@ export default function CareFeedingApp({
               </p>
             </section>
 
-            <Button
-              type="button"
-              className="h-16 w-full rounded-2xl border-2 border-red-900 bg-red-800 text-lg font-bold text-white hover:bg-red-900"
-              onClick={() => void emergencyStop()}
-            >
-              <AlertTriangle className="mr-2 h-6 w-6" />
-              Emergency stop
-            </Button>
+            <section aria-labelledby="user-actions" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <h2 id="user-actions" className="col-span-full text-center text-2xl font-bold text-amber-100">
+                Actions
+              </h2>
+              <Button
+                type="button"
+                className="h-16 rounded-2xl border-2 border-red-900 bg-red-800 text-lg font-bold text-white hover:bg-red-900"
+                onClick={() => void emergencyStop()}
+              >
+                <AlertTriangle className="mr-2 h-6 w-6" />
+                Emergency stop
+              </Button>
+              <Button
+                type="button"
+                className="h-16 rounded-2xl border-2 border-blue-950 bg-blue-900 text-lg font-bold text-white hover:bg-blue-950"
+                onClick={() => void doneMeal()}
+              >
+                <Square className="mr-2 h-6 w-6" />
+                Done
+              </Button>
+            </section>
 
             <div className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] p-6 shadow-lg">
-              <p className="text-center text-xl font-bold text-stone-900">Bites: {bitesCompleted}</p>
-              <p className="mt-2 text-center text-lg font-medium text-stone-800">{statusText}</p>
+              <p className="text-center text-lg font-medium text-stone-800">{statusText}</p>
             </div>
           </>
         ) : (
@@ -573,32 +626,63 @@ export default function CareFeedingApp({
 
             <section className="space-y-4" aria-labelledby="schedule-heading">
               <h2 id="schedule-heading" className="text-center text-2xl font-bold text-amber-100">
-                Meal time
+                Meal reminders
               </h2>
+              <p className="text-center text-base font-medium text-amber-100/90">
+                Set when to remind you for{" "}
+                <span className="font-semibold text-white">{careRecipientName ?? "the user"}</span>
+                &apos;s meals.
+              </p>
 
-              <div className="rounded-2xl border-2 border-stone-600 bg-[#f5ebe0] p-5 shadow-md">
-                <label htmlFor="meal-time" className="flex items-center justify-center gap-2 text-lg font-bold text-stone-950">
-                  <Clock className="h-6 w-6" aria-hidden />
-                  Meal time today
-                </label>
-                <p className="mb-3 text-center text-base font-medium text-stone-800">
-                  When do you plan to eat this meal? (for reminders)
-                </p>
-                <Input
-                  id="meal-time"
-                  type="time"
-                  value={mealTime}
-                  onChange={(e) => setMealTime(e.target.value)}
-                  className="h-16 rounded-2xl border-2 border-stone-600 bg-[#fffefb] text-center text-3xl font-bold tabular-nums text-stone-950 focus-visible:border-blue-800"
-                />
+              <div className="space-y-3">
+                {MEAL_SLOTS.map((slot) => (
+                  <div
+                    key={slot.key}
+                    className="rounded-2xl border-2 border-stone-600 bg-[#f5ebe0] p-4 shadow-md"
+                  >
+                    <label
+                      htmlFor={`meal-time-${slot.key}`}
+                      className="flex items-center justify-center gap-2 text-lg font-bold text-stone-950"
+                    >
+                      <Clock className="h-5 w-5 shrink-0" aria-hidden />
+                      {slot.label}
+                    </label>
+                    <Input
+                      id={`meal-time-${slot.key}`}
+                      type="time"
+                      value={mealSchedule[slot.field]}
+                      onChange={(e) =>
+                        setMealSchedule((prev) => ({
+                          ...prev,
+                          [slot.field]: e.target.value,
+                        }))
+                      }
+                      className="mt-3 h-14 rounded-2xl border-2 border-stone-600 bg-[#fffefb] text-center text-2xl font-bold tabular-nums text-stone-950 focus-visible:border-blue-800"
+                    />
+                  </div>
+                ))}
               </div>
+
+              <Button
+                type="button"
+                disabled={scheduleBusy}
+                className="h-14 w-full rounded-2xl border-2 border-stone-700 bg-stone-800 text-lg font-semibold text-white hover:bg-stone-900 disabled:opacity-60"
+                onClick={() => void saveReminderTimes()}
+              >
+                Save reminder times
+              </Button>
+              {scheduleMessage ? (
+                <p className="text-center text-base font-medium text-amber-100" role="status">
+                  {scheduleMessage}
+                </p>
+              ) : null}
             </section>
 
             <section aria-labelledby="controls-heading">
               <h2 id="controls-heading" className="mb-3 text-center text-2xl font-bold text-amber-100">
                 Controls
               </h2>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <Button
                   type="button"
                   disabled={startBusy}
@@ -610,31 +694,13 @@ export default function CareFeedingApp({
                 </Button>
                 <Button
                   type="button"
-                  variant="outline"
-                  className="h-16 rounded-2xl border-2 border-stone-600 bg-stone-200 text-lg font-semibold text-stone-900 hover:bg-stone-100"
-                  onClick={pauseSession}
+                  className="h-16 rounded-2xl border-2 border-red-900 bg-red-800 text-lg font-bold text-white hover:bg-red-900"
+                  onClick={() => void emergencyStop()}
                 >
-                  <Pause className="mr-2 h-6 w-6" />
-                  Pause
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-16 rounded-2xl border-2 border-stone-600 bg-stone-200 text-lg font-semibold text-stone-900 hover:bg-stone-100"
-                  onClick={() => void stopSession()}
-                >
-                  <Square className="mr-2 h-6 w-6" />
-                  Stop
+                  <AlertTriangle className="mr-2 h-6 w-6" />
+                  Emergency stop
                 </Button>
               </div>
-              <Button
-                type="button"
-                className="mt-4 h-16 w-full rounded-2xl border-2 border-red-900 bg-red-800 text-lg font-bold text-white hover:bg-red-900"
-                onClick={() => void emergencyStop()}
-              >
-                <AlertTriangle className="mr-2 h-6 w-6" />
-                Emergency stop
-              </Button>
             </section>
 
             <section aria-labelledby="history-heading" className="space-y-4">
@@ -644,7 +710,7 @@ export default function CareFeedingApp({
               </h2>
               <p className="text-center text-base text-amber-100/90">
                 {previewMode ? "Saved on this device for " : "Saved in your account for "}
-                <strong className="text-white">{userName ?? userEmail ?? "this account"}</strong>.
+                <strong className="text-white">{careRecipientName ?? userEmail ?? "this account"}</strong>.
               </p>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -682,7 +748,7 @@ export default function CareFeedingApp({
 
                   {mealHistory.length === 0 ? (
                     <p className="text-center text-lg font-medium text-stone-700">
-                      No finished meals yet. Press Start to count automatically, then press Stop to save the meal.
+                      No finished meals yet. Press Start to count bites automatically, then use Emergency stop to end the meal.
                     </p>
                   ) : (
                     <ul className="max-h-[28rem] space-y-4 overflow-y-auto pr-1">
