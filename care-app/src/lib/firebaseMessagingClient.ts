@@ -38,10 +38,18 @@ export async function obtainFcmDeviceToken(): Promise<string | null> {
   if (permission !== "granted") return null;
 
   const sw = await registerFcmServiceWorker();
-  if (!sw) return null;
+  if (!sw) {
+    console.warn("[fcm] service worker not registered");
+    return null;
+  }
 
   try {
-    return await getToken(messagingInstance, { vapidKey, serviceWorkerRegistration: sw });
+    await navigator.serviceWorker.ready;
+    const token = await getToken(messagingInstance, { vapidKey, serviceWorkerRegistration: sw });
+    if (process.env.NODE_ENV === "development" && token) {
+      console.info("[fcm] device token (for Firebase Console tests):", token);
+    }
+    return token;
   } catch (e) {
     console.warn("[fcm] getToken failed", e);
     return null;

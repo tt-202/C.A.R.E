@@ -33,10 +33,13 @@ export async function sendTestPushFromServer(getIdToken: () => Promise<string>):
     const body = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
       sent?: number;
+      failed?: number;
+      errors?: string[];
       error?: string;
     };
     if (!res.ok) {
-      return { ok: false, error: body.error ?? `Server error (${res.status})` };
+      const detail = body.errors?.length ? body.errors.join("; ") : body.error;
+      return { ok: false, error: detail ?? `Server error (${res.status})` };
     }
     return { ok: true, sent: body.sent ?? 0 };
   } catch (e) {

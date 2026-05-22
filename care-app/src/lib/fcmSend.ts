@@ -18,9 +18,9 @@ function getAdminMessaging() {
 export async function sendPushToUser(
   userId: string,
   payload: PushPayload,
-): Promise<{ sent: number; failed: number }> {
+): Promise<{ sent: number; failed: number; errors: string[] }> {
   const tokens = await listFcmTokens(userId);
-  if (tokens.length === 0) return { sent: 0, failed: 0 };
+  if (tokens.length === 0) return { sent: 0, failed: 0, errors: [] };
 
   const link = payload.link ?? "/";
   const message: MulticastMessage = {
@@ -42,6 +42,7 @@ export async function sendPushToUser(
   const res = await getAdminMessaging().sendEachForMulticast(message);
   let sent = 0;
   let failed = 0;
+  const errors: string[] = [];
 
   await Promise.all(
     res.responses.map(async (r, i) => {
@@ -50,6 +51,9 @@ export async function sendPushToUser(
         return;
       }
       failed += 1;
+      const msg = r.error?.message ?? r.error?.code ?? "send failed";
+      errors.push(msg);
+      console.warn("[fcm] send failed", r.error);
       const code = r.error?.code;
       if (
         code === "messaging/invalid-registration-token" ||
@@ -60,5 +64,5 @@ export async function sendPushToUser(
     }),
   );
 
-  return { sent, failed };
+  return { sent, failed, errors };
 }

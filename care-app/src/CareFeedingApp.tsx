@@ -42,6 +42,7 @@ import {
 import { useFcmPush } from "@/hooks/useFcmPush";
 import { isFcmConfigured } from "@/lib/firebasePublicConfig";
 import { sendTestPushFromServer } from "@/lib/fcmRegisterApi";
+import { setupPushOnThisDevice } from "@/lib/fcmDiagnostics";
 
 /** Four plate sections: numbered 1–4 for the user; labels for caregiver. */
 const PLATE_SECTIONS = [
@@ -783,11 +784,15 @@ export default function CareFeedingApp({
                   handleInAppAlert({ body: test.body });
 
                   if (isFcmConfigured()) {
-                    await requestMealReminderPermission();
+                    const setup = await setupPushOnThisDevice(getIdToken, role);
+                    if (!setup.ok) {
+                      setScheduleMessage(setup.error ?? "Push setup failed.");
+                      return;
+                    }
                     const fcm = await sendTestPushFromServer(getIdToken);
                     if (fcm.ok && (fcm.sent ?? 0) > 0) {
                       setScheduleMessage(
-                        "FCM test push sent — check your phone or computer notification center.",
+                        `FCM test push sent to this device (${setup.tokenPreview}). Check your notification center.`,
                       );
                       return;
                     }

@@ -17,13 +17,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { sent, failed } = await sendPushToUser(ctx.uid, {
+    const { sent, failed, errors } = await sendPushToUser(ctx.uid, {
       title: "C.A.R.E — Test push",
       body: "Firebase Cloud Messaging is working on this device.",
       tag: "care-fcm-test",
     });
 
-    return NextResponse.json({ ok: true, sent, failed });
+    if (sent === 0) {
+      return NextResponse.json({
+        ok: false,
+        sent,
+        failed,
+        errors,
+        error:
+          errors[0] ??
+          "Push send failed. Confirm VAPID key and service account are from the same Firebase project.",
+      }, { status: 502 });
+    }
+
+    return NextResponse.json({ ok: true, sent, failed, errors });
   } catch (e) {
     if (e instanceof Error && e.message === "Unauthorized") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
