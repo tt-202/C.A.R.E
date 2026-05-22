@@ -28,8 +28,39 @@ export async function saveCareProfileToServer(
         dinnerTime: schedule.dinnerTime,
       }),
     });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      console.warn("[profile] save failed", res.status, body.error ?? res.statusText);
+    }
     return res.ok;
-  } catch {
+  } catch (e) {
+    console.warn("[profile] save failed", e);
+    return false;
+  }
+}
+
+export async function saveMealScheduleOnly(
+  getIdToken: () => Promise<string>,
+  schedule: { breakfastTime: string; lunchTime: string; dinnerTime: string },
+): Promise<boolean> {
+  const normalized = normalizeMealSchedule(schedule);
+  try {
+    const token = await getIdToken();
+    const res = await fetch("/api/profile", {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(normalized),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      console.warn("[profile] schedule save failed", res.status, body.error ?? res.statusText);
+    }
+    return res.ok;
+  } catch (e) {
+    console.warn("[profile] schedule save failed", e);
     return false;
   }
 }
@@ -70,5 +101,7 @@ export async function saveMealSchedule(
     ...normalized,
   };
   persistCareProfileLocal(profile);
+  const patchOk = await saveMealScheduleOnly(getIdToken, normalized);
+  if (patchOk) return true;
   return saveCareProfileToServer(getIdToken, profile);
 }

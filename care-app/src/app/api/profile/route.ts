@@ -29,6 +29,9 @@ export async function GET(request: NextRequest) {
     if (e instanceof Error && e.message === "Unauthorized") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    if (e instanceof Error && e.message.includes("FIREBASE_SERVICE_ACCOUNT_JSON")) {
+      return NextResponse.json({ error: e.message }, { status: 500 });
+    }
     console.error(e);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
@@ -73,8 +76,8 @@ export async function POST(request: NextRequest) {
     if (e instanceof Error && e.message === "Unauthorized") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    if (e instanceof Error && e.message === "FIREBASE_SERVICE_ACCOUNT_JSON is not set") {
-      return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
+    if (e instanceof Error && e.message.includes("FIREBASE_SERVICE_ACCOUNT_JSON")) {
+      return NextResponse.json({ error: e.message }, { status: 500 });
     }
     console.error(e);
     return NextResponse.json({ error: "Server error" }, { status: 500 });
@@ -103,6 +106,9 @@ export async function PATCH(request: NextRequest) {
   } catch (e) {
     if (e instanceof Error && e.message === "Unauthorized") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (e instanceof Error && e.message.includes("FIREBASE_SERVICE_ACCOUNT_JSON")) {
+      return NextResponse.json({ error: e.message }, { status: 500 });
     }
     console.error(e);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

@@ -29,7 +29,12 @@ import {
   type MealSchedule,
 } from "@/lib/mealSchedule";
 import { saveMealSchedule } from "@/lib/saveCareProfile";
-import { requestMealReminderPermission, useMealReminders } from "@/hooks/useMealReminders";
+import {
+  getNotificationPermission,
+  requestMealReminderPermission,
+  sendTestMealNotification,
+  useMealReminders,
+} from "@/hooks/useMealReminders";
 
 /** Four plate sections: numbered 1–4 for the user; labels for caregiver. */
 const PLATE_SECTIONS = [
@@ -93,6 +98,7 @@ export default function CareFeedingApp({
   );
   const [scheduleBusy, setScheduleBusy] = useState(false);
   const [scheduleMessage, setScheduleMessage] = useState<string | null>(null);
+  const [activeReminder, setActiveReminder] = useState<string | null>(null);
   const [biteSectionStack, setBiteSectionStack] = useState<SectionNum[]>([]);
   const [mealHistory, setMealHistory] = useState<MealHistoryEntry[]>([]);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -138,7 +144,11 @@ export default function CareFeedingApp({
   useMealReminders({
     schedule: mealSchedule,
     careRecipientName: careRecipientName ?? "User",
-    enabled: !previewMode,
+    enabled: !previewMode && !isUser,
+    onReminder: (payload) => {
+      setActiveReminder(payload.body);
+      window.setTimeout(() => setActiveReminder(null), 60_000);
+    },
   });
 
   const saveReminderTimes = async () => {
@@ -165,10 +175,15 @@ export default function CareFeedingApp({
     setScheduleBusy(false);
     if (saved) {
       onMealScheduleSaved?.(normalizeMealSchedule(mealSchedule));
+      const perm = getNotificationPermission();
       setScheduleMessage(
         ok
-          ? "Reminder times saved. You will get alerts at each meal time."
-          : "Reminder times saved. Allow notifications in your browser for alerts.",
+          ? "Reminder times saved. Keep this page open around meal time for alerts (or check the yellow banner)."
+          : perm === "denied"
+            ? "Times saved. Notifications are blocked — enable them in browser site settings, then tap Test notification."
+            : perm === "unsupported"
+              ? "Times saved. This browser does not support notifications; use Chrome/Safari on desktop."
+              : "Times saved. Tap Allow when asked, or use Test notification below.",
       );
     } else {
       setApiError("Could not save reminder times. Check your connection.");
@@ -509,6 +524,15 @@ export default function CareFeedingApp({
           </p>
         ) : null}
 
+        {activeReminder ? (
+          <p
+            className="rounded-2xl border-2 border-amber-400 bg-amber-200 px-4 py-3 text-center text-lg font-bold text-amber-950"
+            role="alert"
+          >
+            {activeReminder}
+          </p>
+        ) : null}
+
         {isUser ? (
           <>
             <section aria-labelledby="user-plate">
@@ -631,7 +655,8 @@ export default function CareFeedingApp({
               <p className="text-center text-base font-medium text-amber-100/90">
                 Set when to remind you for{" "}
                 <span className="font-semibold text-white">{careRecipientName ?? "the user"}</span>
-                &apos;s meals.
+                &apos;s meals. Keep this tab open at those times (phone browsers often block background
+                alerts).
               </p>
 
               <div className="space-y-3">
@@ -670,6 +695,23 @@ export default function CareFeedingApp({
                 onClick={() => void saveReminderTimes()}
               >
                 Save reminder times
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-12 w-full rounded-2xl border-2 border-amber-300/60 bg-amber-100/90 text-base font-semibold text-stone-900 hover:bg-amber-50"
+                onClick={async () => {
+                  const granted = await requestMealReminderPermission();
+                  if (granted && sendTestMealNotification(careRecipientName ?? "the user")) {
+                    setScheduleMessage("Test notification sent — check your system tray or phone banner.");
+                  } else {
+                    setScheduleMessage(
+                      "Could not send test. Allow notifications for this site in browser settings.",
+                    );
+                  }
+                }}
+              >
+                Test notification
               </Button>
               {scheduleMessage ? (
                 <p className="text-center text-base font-medium text-amber-100" role="status">
