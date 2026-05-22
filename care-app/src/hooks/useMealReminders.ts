@@ -56,8 +56,6 @@ function dispatchReminder(
 
 export function useMealReminders({ schedule, careRecipientName, enabled, onReminder }: Options) {
   const firedRef = useRef<Record<string, string>>({});
-  const onReminderRef = useRef(onReminder);
-  onReminderRef.current = onReminder;
 
   useEffect(() => {
     if (!enabled || typeof window === "undefined") return;
@@ -81,7 +79,7 @@ export function useMealReminders({ schedule, careRecipientName, enabled, onRemin
           time,
           careRecipientName,
           fireKey,
-          onReminderRef.current,
+          onReminder,
         );
       }
     };
@@ -97,7 +95,7 @@ export function useMealReminders({ schedule, careRecipientName, enabled, onRemin
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [schedule, careRecipientName, enabled]);
+  }, [schedule, careRecipientName, enabled, onReminder]);
 }
 
 export function getNotificationPermission(): NotificationPermission | "unsupported" {

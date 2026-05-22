@@ -141,14 +141,16 @@ export default function CareFeedingApp({
     plannedMealTimeRef.current = formatPlannedMealTime(slot.label, slot.time);
   }, [mealSchedule]);
 
+  const handleMealReminder = useCallback((payload: { body: string }) => {
+    setActiveReminder(payload.body);
+    window.setTimeout(() => setActiveReminder(null), 60_000);
+  }, []);
+
   useMealReminders({
     schedule: mealSchedule,
     careRecipientName: careRecipientName ?? "User",
     enabled: !previewMode && !isUser,
-    onReminder: (payload) => {
-      setActiveReminder(payload.body);
-      window.setTimeout(() => setActiveReminder(null), 60_000);
-    },
+    onReminder: handleMealReminder,
   });
 
   const saveReminderTimes = async () => {
