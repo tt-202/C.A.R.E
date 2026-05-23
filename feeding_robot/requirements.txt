@@ -1,0 +1,10 @@
+opencv-python
+numpy
+ultralytics
+mediapipe
+pupil-apriltags
+flask
+flask-socketio
+pymycobot
+RPi.GPIO
+adafruit-circuitpython-vl53l0x
