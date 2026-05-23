@@ -8,6 +8,7 @@ import {
 import { MEAL_SLOTS, type MealSchedule } from "@/lib/mealSchedule";
 import { isFcmConfigured } from "@/lib/firebasePublicConfig";
 import { triggerMealReminderPush } from "@/lib/fcmRegisterApi";
+import { scheduleLocalMealReminders } from "@/lib/scheduleLocalMealReminders";
 
 export { REMINDER_LEAD_MINUTES } from "@/lib/mealReminderPush";
 
@@ -80,6 +81,10 @@ export function useMealReminders({
 
   useEffect(() => {
     if (!enabled || typeof window === "undefined") return;
+
+    if (Notification.permission === "granted") {
+      void scheduleLocalMealReminders(schedule, careRecipientName);
+    }
 
     const check = () => {
       const now = new Date();

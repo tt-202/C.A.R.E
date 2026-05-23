@@ -29,6 +29,15 @@ export function isFirebaseConfigured(): boolean {
   );
 }
 
+export function getClientApp(): FirebaseApp {
+  getClientAuth();
+  const firebaseApp = app ?? getApps()[0];
+  if (!firebaseApp) {
+    throw new Error("Firebase app is not initialized");
+  }
+  return firebaseApp;
+}
+
 export function getClientAuth(): Auth {
   if (typeof window === "undefined") {
     throw new Error("Firebase Auth is only available in the browser");

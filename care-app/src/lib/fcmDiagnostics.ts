@@ -57,15 +57,12 @@ export async function setupPushOnThisDevice(
     };
   }
 
-  const token = await obtainFcmDeviceToken();
+  const { token, error: tokenError } = await obtainFcmDeviceToken();
   if (!token) {
     return {
       ok: false,
       tokenPreview: null,
-      error:
-        Notification.permission !== "granted"
-          ? "Notification permission was not granted. Click Allow when the browser asks."
-          : "Could not get FCM token. Check DevTools → Console for [fcm] errors and that /firebase-messaging-sw.js loads (status 200).",
+      error: tokenError ?? "Could not get FCM token.",
       steps,
     };
   }

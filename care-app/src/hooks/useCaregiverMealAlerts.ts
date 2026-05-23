@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { onAuthStateChanged } from "firebase/auth";
 import { doc, onSnapshot } from "firebase/firestore";
-import { getClientFirestore, isFirebaseConfigured } from "@/lib/firebaseClient";
+import { getClientAuth, getClientFirestore, isFirebaseConfigured } from "@/lib/firebaseClient";
 import {
   formatMealDoneNotification,
   MEAL_DONE_CHANNEL,
@@ -113,8 +114,18 @@ export function useCaregiverMealAlerts({ profileUid, enabled, getIdToken, onAler
     window.addEventListener("storage", onStorage);
 
     let unsubFirestore: (() => void) | undefined;
-    if (isFirebaseConfigured()) {
+    let unsubAuth: (() => void) | undefined;
+
+    const attachFirestoreListener = () => {
+      unsubFirestore?.();
+      unsubFirestore = undefined;
+      if (!isFirebaseConfigured()) return;
+
       try {
+        const auth = getClientAuth();
+        const user = auth.currentUser;
+        if (!user || user.uid !== profileUid) return;
+
         const ref = doc(getClientFirestore(), "users", profileUid, "careAlerts", "latest");
         unsubFirestore = onSnapshot(
           ref,
@@ -126,6 +137,17 @@ export function useCaregiverMealAlerts({ profileUid, enabled, getIdToken, onAler
         );
       } catch (err) {
         console.warn("[caregiver alert] Firestore setup failed", err);
+      }
+    };
+
+    if (isFirebaseConfigured()) {
+      try {
+        const auth = getClientAuth();
+        unsubAuth = onAuthStateChanged(auth, () => {
+          attachFirestoreListener();
+        });
+      } catch (err) {
+        console.warn("[caregiver alert] Firestore auth setup failed", err);
       }
     }
 
@@ -143,6 +165,7 @@ export function useCaregiverMealAlerts({ profileUid, enabled, getIdToken, onAler
       window.removeEventListener("storage", onStorage);
       channel?.close();
       unsubFirestore?.();
+      unsubAuth?.();
     };
   }, [profileUid, enabled, getIdToken]);
 }

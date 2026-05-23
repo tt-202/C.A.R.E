@@ -2,7 +2,8 @@ import { MEAL_SLOTS, normalizeMealSchedule, type MealSchedule } from "@/lib/meal
 
 /** Notify this many minutes before the scheduled meal time. */
 export const REMINDER_LEAD_MINUTES = 15;
-export const REMINDER_WINDOW_MINUTES = 3;
+/** Matches Vercel cron interval (1 min) with a small buffer. */
+export const REMINDER_WINDOW_MINUTES = 6;
 
 function todayKey(): string {
   return new Date().toISOString().slice(0, 10);

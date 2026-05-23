@@ -43,6 +43,10 @@ import { useFcmPush } from "@/hooks/useFcmPush";
 import { isFcmConfigured } from "@/lib/firebasePublicConfig";
 import { sendTestPushFromServer } from "@/lib/fcmRegisterApi";
 import { setupPushOnThisDevice } from "@/lib/fcmDiagnostics";
+import {
+  minutesUntilNextReminder,
+  scheduleLocalMealReminders,
+} from "@/lib/scheduleLocalMealReminders";
 
 /** Four plate sections: numbered 1–4 for the user; labels for caregiver. */
 const PLATE_SECTIONS = [
@@ -164,7 +168,7 @@ export default function CareFeedingApp({
   });
 
   useFcmPush({
-    enabled: !previewMode && Boolean(profileUid),
+    enabled: !previewMode && Boolean(profileUid) && !isUser,
     profileUid,
     role,
     getIdToken,
@@ -198,31 +202,67 @@ export default function CareFeedingApp({
     }
     setScheduleBusy(true);
     const ok = await requestMealReminderPermission();
+    const normalized = normalizeMealSchedule(mealSchedule);
     const result = await saveMealSchedule(
       profileUid,
       getIdTokenRef.current,
       careRecipientName,
       caregiverName,
-      mealSchedule,
+      normalized,
     );
     setScheduleBusy(false);
-    if (result.ok) {
-      onMealScheduleSaved?.(normalizeMealSchedule(mealSchedule));
-      const perm = getNotificationPermission();
-      setScheduleMessage(
-        ok
-          ? isFcmConfigured()
-            ? "Reminder times saved. Push alerts are enabled (15 min before meals, even when the tab is in the background)."
-            : "Reminder times saved. You'll get alerts 15 minutes before each meal — keep this page open (or watch the yellow banner)."
-          : perm === "denied"
-            ? `Times saved. ${notificationBlockedHelp()}`
-            : perm === "unsupported"
-              ? "Times saved. This browser does not support notifications; use Chrome/Safari on desktop."
-              : "Times saved. Tap Allow when asked, or use Test notification below.",
-      );
-    } else {
+    if (!result.ok) {
       setApiError(formatProfileSaveError(result));
+      return;
     }
+
+    onMealScheduleSaved?.(normalized);
+
+    const perm = getNotificationPermission();
+    if (perm === "denied") {
+      setScheduleMessage(`Times saved. ${notificationBlockedHelp()}`);
+      return;
+    }
+    if (perm === "unsupported") {
+      setScheduleMessage(
+        "Times saved. This browser does not support notifications; use Chrome or Edge on desktop.",
+      );
+      return;
+    }
+    if (!ok) {
+      setScheduleMessage("Times saved. Tap Allow when asked, then save again to enable push reminders.");
+      return;
+    }
+
+    let pushDetail = "";
+    if (isFcmConfigured()) {
+      const setup = await setupPushOnThisDevice(getIdTokenRef.current, role);
+      if (!setup.ok) {
+        setScheduleMessage(
+          `Times saved, but push setup failed: ${setup.error ?? "unknown error"}. Try Test notification below.`,
+        );
+        return;
+      }
+      pushDetail = " Server push is registered for this device.";
+    }
+
+    const local = await scheduleLocalMealReminders(normalized, careRecipientName ?? "User");
+    if (local.scheduled > 0) {
+      pushDetail += ` ${local.scheduled} reminder(s) scheduled on this device (15 min before meals, even if the tab is closed).`;
+    } else if (local.supported) {
+      pushDetail += " No more reminders today; tomorrow's will schedule when you open the app.";
+    } else if (isFcmConfigured()) {
+      pushDetail +=
+        " Background alerts use server push (requires the app deployed on Vercel with CRON_SECRET).";
+    } else {
+      pushDetail += " Keep this tab open or deploy with Firebase for background alerts.";
+    }
+
+    const mins = minutesUntilNextReminder(normalized);
+    const nextHint =
+      mins !== null ? ` Next alert in about ${mins} minute${mins === 1 ? "" : "s"}.` : "";
+
+    setScheduleMessage(`Reminder times saved.${pushDetail}${nextHint}`);
   };
 
   useEffect(() => {
