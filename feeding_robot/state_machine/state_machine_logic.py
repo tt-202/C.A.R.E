@@ -138,3 +138,18 @@ class FeedingStateMachine:
             self.arm.stop_motion()
 
             self.lcd.show_status("ERROR")
+
+# mouth detection!!!!!
+# from vision_module import get_mouth_state
+
+# state = get_mouth_state()
+
+# dx, dy = state["offset"]
+
+# if state["is_open"]:
+#     # trigger feeding action
+#     pass
+
+# Use dx/dy as error for motion correction
+# make sure, ONE FACE AS WELL, ELSE SEND A COMMAND TO LCD_DISPLAY for ERROR
+#
