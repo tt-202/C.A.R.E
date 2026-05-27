@@ -386,7 +386,7 @@ export default function CareFeedingApp({
   };
 
   const notifyCaregiverIfUserFinished = useCallback(
-    async (bitesTotal: number, plannedMealTime: string, hadActiveMeal: boolean) => {
+    async (bitesTotal: number, plannedMealTime: string) => {
       if (!isUser || previewMode) return;
       setDoneMessage(null);
       const result = await notifyCaregiverMealFinished(getIdTokenRef.current, {
@@ -412,8 +412,6 @@ export default function CareFeedingApp({
     setSessionActive(false);
     const bitesTotal = bitesCompleted;
     const plannedMealTime = plannedMealTimeRef.current;
-    const hadActiveMeal =
-      mealStartedAtRef.current !== null || mealIdRef.current !== null || bitesTotal > 0;
 
     if (previewMode) {
       finalizeMealLocal();
@@ -426,7 +424,7 @@ export default function CareFeedingApp({
     setBitesCompleted(0);
 
     if (!mid) {
-      await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime, hadActiveMeal);
+      await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime);
       return;
     }
     try {
@@ -441,11 +439,11 @@ export default function CareFeedingApp({
       });
       if (!res.ok) throw new Error("stop failed");
       await loadHistory();
-      await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime, hadActiveMeal);
+      await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime);
     } catch {
       setApiError("Could not save this meal. Your next sync may show partial data.");
       await loadHistory();
-      await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime, hadActiveMeal);
+      await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime);
     }
   };
 
