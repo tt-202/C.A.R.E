@@ -32,31 +32,18 @@ import { formatProfileSaveError, saveMealSchedule } from "@/lib/saveCareProfile"
 import { notifyCaregiverMealFinished } from "@/lib/notifyCaregiver";
 import { useCaregiverMealAlerts } from "@/hooks/useCaregiverMealAlerts";
 import {
-  buildTestReminderPayload,
   getNotificationPermission,
   notificationBlockedHelp,
   requestMealReminderPermission,
-  sendTestMealNotification,
   useMealReminders,
 } from "@/hooks/useMealReminders";
 import { useFcmPush } from "@/hooks/useFcmPush";
 import { isFcmConfigured } from "@/lib/firebasePublicConfig";
-import { sendTestPushFromServer } from "@/lib/fcmRegisterApi";
 import { setupPushOnThisDevice } from "@/lib/fcmDiagnostics";
 import {
   minutesUntilNextReminder,
   scheduleLocalMealReminders,
 } from "@/lib/scheduleLocalMealReminders";
-
-/** Four plate sections: numbered 1–4 for the user; labels for caregiver. */
-const PLATE_SECTIONS = [
-  { num: 1 as const, id: "A", name: "Vegetables", hint: "Salad, greens" },
-  { num: 2 as const, id: "B", name: "Main dish", hint: "Meat, fish, tofu" },
-  { num: 3 as const, id: "C", name: "Rice or potato", hint: "Starch" },
-  { num: 4 as const, id: "D", name: "Fruit", hint: "Dessert" },
-] as const;
-
-type SectionNum = (typeof PLATE_SECTIONS)[number]["num"];
 
 type CareFeedingAppProps = {
   role: UserRole;
@@ -97,12 +84,6 @@ export default function CareFeedingApp({
   const welcomeName = isUser
     ? (careRecipientName ?? "User")
     : (caregiverName ?? "Caregiver");
-  const [selectedSection, setSelectedSection] = useState<SectionNum>(2);
-  const selectedSectionRef = useRef<SectionNum>(selectedSection);
-  useEffect(() => {
-    selectedSectionRef.current = selectedSection;
-  }, [selectedSection]);
-
   const [sessionActive, setSessionActive] = useState(false);
   const [bitesCompleted, setBitesCompleted] = useState(0);
   const [mealSchedule, setMealSchedule] = useState<MealSchedule>(() =>
@@ -111,14 +92,12 @@ export default function CareFeedingApp({
   const [scheduleBusy, setScheduleBusy] = useState(false);
   const [scheduleMessage, setScheduleMessage] = useState<string | null>(null);
   const [activeReminder, setActiveReminder] = useState<string | null>(null);
-  const [biteSectionStack, setBiteSectionStack] = useState<SectionNum[]>([]);
   const [mealHistory, setMealHistory] = useState<MealHistoryEntry[]>([]);
   const [apiError, setApiError] = useState<string | null>(null);
   const [doneMessage, setDoneMessage] = useState<string | null>(null);
   const [startBusy, setStartBusy] = useState(false);
 
   const mealStartedAtRef = useRef<number | null>(null);
-  const biteSectionStackRef = useRef<SectionNum[]>([]);
   const plannedMealTimeRef = useRef(
     formatPlannedMealTime(
       activeMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule)).label,
@@ -239,7 +218,7 @@ export default function CareFeedingApp({
       const setup = await setupPushOnThisDevice(getIdTokenRef.current, role);
       if (!setup.ok) {
         setScheduleMessage(
-          `Times saved, but push setup failed: ${setup.error ?? "unknown error"}. Try Test notification below.`,
+          `Times saved, but push setup failed: ${setup.error ?? "unknown error"}. Allow notifications and save again.`,
         );
         return;
       }
@@ -264,10 +243,6 @@ export default function CareFeedingApp({
 
     setScheduleMessage(`Reminder times saved.${pushDetail}${nextHint}`);
   };
-
-  useEffect(() => {
-    biteSectionStackRef.current = biteSectionStack;
-  }, [biteSectionStack]);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -300,23 +275,16 @@ export default function CareFeedingApp({
 
   const finalizeMealLocal = useCallback(() => {
     const start = mealStartedAtRef.current;
-    const stack = biteSectionStackRef.current;
     if (start === null) {
       setSessionActive(false);
       return;
     }
     const end = Date.now();
     const durationMs = end - start;
-    const bitesTotal = stack.length;
-    const bySection: Record<1 | 2 | 3 | 4, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
-    for (const s of stack) {
-      bySection[s] += 1;
-    }
+    const bitesTotal = bitesCompleted;
     const tooShortEmpty = bitesTotal === 0 && durationMs < 3000;
     if (tooShortEmpty) {
       mealStartedAtRef.current = null;
-      setBiteSectionStack([]);
-      biteSectionStackRef.current = [];
       setBitesCompleted(0);
       setSessionActive(false);
       return;
@@ -326,37 +294,28 @@ export default function CareFeedingApp({
       endedAt: new Date(end).toISOString(),
       durationMs,
       bitesTotal,
-      bySection,
+      bySection: { 1: bitesTotal, 2: 0, 3: 0, 4: 0 },
       plannedMealTime: plannedMealTimeRef.current,
     };
     setMealHistory((prev) => [entry, ...prev]);
     mealStartedAtRef.current = null;
-    setBiteSectionStack([]);
-    biteSectionStackRef.current = [];
     setBitesCompleted(0);
     setSessionActive(false);
-  }, []);
-
-  const selectedMeta = PLATE_SECTIONS.find((s) => s.num === selectedSection) ?? PLATE_SECTIONS[1];
+  }, [bitesCompleted]);
 
   const statusText = useMemo(() => {
     if (isUser) {
-      if (mealStartedAtRef.current === null) {
-        return "Tap a plate section (1–4) to begin and count a bite.";
-      }
-      return "Meal in progress.";
+      if (!sessionActive) return "Press Done when you finish your meal.";
+      return "Meal in progress — press Done when finished.";
     }
-    if (mealStartedAtRef.current === null) return "Not started. Press Start to begin.";
-    return "Counting bites...";
-  }, [isUser]);
+    if (!sessionActive) return "Not started. Press Start to begin.";
+    return "Counting bites automatically…";
+  }, [isUser, sessionActive]);
 
   const recordBite = useCallback(async () => {
-    const sec = selectedSectionRef.current;
-    const prev = biteSectionStackRef.current;
-    const next = [...prev, sec];
-    biteSectionStackRef.current = next;
-    setBiteSectionStack(next);
-    setBitesCompleted(next.length);
+    const prev = bitesCompleted;
+    const next = prev + 1;
+    setBitesCompleted(next);
 
     if (previewMode) return;
 
@@ -364,6 +323,7 @@ export default function CareFeedingApp({
     biteInFlight.current = true;
     const mid = mealIdRef.current;
     if (!mid) {
+      setBitesCompleted(prev);
       biteInFlight.current = false;
       return;
     }
@@ -375,21 +335,19 @@ export default function CareFeedingApp({
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ sectionNum: sec }),
+        body: JSON.stringify({ sectionNum: 1 }),
       });
       if (!res.ok) throw new Error("bite failed");
       const data = (await res.json()) as { bitesTotal: number };
       setBitesCompleted(data.bitesTotal);
-      void queueRobot("next_bite", { sectionNum: sec, mealId: mid });
+      void queueRobot("next_bite", { sectionNum: 1, mealId: mid });
     } catch {
-      biteSectionStackRef.current = prev;
-      setBiteSectionStack(prev);
-      setBitesCompleted(prev.length);
+      setBitesCompleted(prev);
       setApiError("Could not save a bite. Check your connection.");
     } finally {
       biteInFlight.current = false;
     }
-  }, [previewMode, queueRobot]);
+  }, [previewMode, queueRobot, bitesCompleted]);
 
   const startSession = async () => {
     setApiError(null);
@@ -398,8 +356,6 @@ export default function CareFeedingApp({
       plannedMealTimeRef.current = formatPlannedMealTime(slot.label, slot.time);
       if (previewMode) {
         mealStartedAtRef.current = Date.now();
-        setBiteSectionStack([]);
-        biteSectionStackRef.current = [];
         setBitesCompleted(0);
       } else {
         setStartBusy(true);
@@ -417,8 +373,6 @@ export default function CareFeedingApp({
           const data = (await res.json()) as { mealId: string };
           mealIdRef.current = data.mealId;
           mealStartedAtRef.current = Date.now();
-          setBiteSectionStack([]);
-          biteSectionStackRef.current = [];
           setBitesCompleted(0);
         } catch {
           setApiError("Could not start a meal. Check your connection and sign-in.");
@@ -434,10 +388,6 @@ export default function CareFeedingApp({
   const notifyCaregiverIfUserFinished = useCallback(
     async (bitesTotal: number, plannedMealTime: string, hadActiveMeal: boolean) => {
       if (!isUser || previewMode) return;
-      if (!hadActiveMeal && bitesTotal < 1) {
-        setDoneMessage("Tap a plate section (1–4) at least once before Done to record a meal.");
-        return;
-      }
       setDoneMessage(null);
       const result = await notifyCaregiverMealFinished(getIdTokenRef.current, {
         careRecipientName: careRecipientName ?? "User",
@@ -460,7 +410,7 @@ export default function CareFeedingApp({
     setApiError(null);
     setDoneMessage(null);
     setSessionActive(false);
-    const bitesTotal = Math.max(biteSectionStackRef.current.length, bitesCompleted);
+    const bitesTotal = bitesCompleted;
     const plannedMealTime = plannedMealTimeRef.current;
     const hadActiveMeal =
       mealStartedAtRef.current !== null || mealIdRef.current !== null || bitesTotal > 0;
@@ -473,8 +423,6 @@ export default function CareFeedingApp({
     const mid = mealIdRef.current;
     mealIdRef.current = null;
     mealStartedAtRef.current = null;
-    setBiteSectionStack([]);
-    biteSectionStackRef.current = [];
     setBitesCompleted(0);
 
     if (!mid) {
@@ -502,28 +450,22 @@ export default function CareFeedingApp({
   };
 
   const emergencyStop = async () => {
-    if (mealStartedAtRef.current !== null) {
+    if (!isUser && mealStartedAtRef.current !== null) {
       await recordBite();
+    }
+    if (isUser && mealStartedAtRef.current === null) {
+      await startSession();
     }
     void queueRobot("stop");
     await finishMealOnServer();
   };
 
   const doneMeal = async () => {
-    void queueRobot("stop");
-    await finishMealOnServer();
-  };
-
-  const handleUserSectionSelect = async (num: SectionNum) => {
-    setSelectedSection(num);
-    selectedSectionRef.current = num;
-    setApiError(null);
-    if (mealStartedAtRef.current === null) {
+    if (isUser && mealStartedAtRef.current === null) {
       await startSession();
     }
-    if (mealStartedAtRef.current !== null) {
-      await recordBite();
-    }
+    void queueRobot("stop");
+    await finishMealOnServer();
   };
 
   useEffect(() => {
@@ -616,8 +558,8 @@ export default function CareFeedingApp({
           ) : null}
           <p className={`text-lg text-amber-100/95 ${welcomeName ? "mt-1" : "mt-2"}`}>
             {isUser
-              ? "Tap a plate section (1–4) for each bite, then press Done when finished."
-              : "Pick food, set breakfast/lunch/dinner reminder times, and track bites."}
+              ? "Press Done when you finish your meal."
+              : "Set meal reminder times and track bites."}
           </p>
           {previewMode ? (
             <p className="mt-3 rounded-2xl border border-amber-300/40 bg-blue-950/50 px-4 py-2 text-base font-semibold text-amber-100">
@@ -646,60 +588,14 @@ export default function CareFeedingApp({
 
         {isUser ? (
           <>
-            <section aria-labelledby="user-plate">
-              <h2 id="user-plate" className="mb-3 text-center text-2xl font-bold text-amber-100">
-                Choose food section
-              </h2>
-              <p className="mb-4 text-center text-lg text-amber-100/90">
-                The plate has <strong className="text-white">4 sections</strong>. Tap a number for the next bite.
-              </p>
-              <div
-                className="mx-auto max-w-sm rounded-3xl border-4 border-stone-700 bg-[#e8dcc8] p-3 shadow-inner"
-                role="group"
-                aria-label="Plate with four numbered sections"
-              >
-                <div className="grid grid-cols-2 gap-2">
-                  {PLATE_SECTIONS.map((sec) => {
-                    const active = selectedSection === sec.num;
-                    return (
-                      <button
-                        key={sec.num}
-                        type="button"
-                        onClick={() => void handleUserSectionSelect(sec.num)}
-                        className={`flex min-h-[6.5rem] flex-col items-center justify-center rounded-2xl border-4 text-center transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-200 ${
-                          active
-                            ? "border-blue-950 bg-blue-900 text-white shadow-lg"
-                            : "border-stone-600 bg-[#f5ebe0] text-stone-950 hover:border-stone-800"
-                        }`}
-                        aria-pressed={active}
-                        aria-label={`Section ${sec.num}`}
-                      >
-                        <span className="text-5xl font-black tabular-nums leading-none">{sec.num}</span>
-                        <span className={`mt-1 text-sm font-semibold ${active ? "text-blue-100" : "text-stone-600"}`}>
-                          Section {sec.num}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <p className="mt-4 text-center text-xl font-bold text-amber-100">
-                Selected: section <span className="text-white">{selectedSection}</span>
-              </p>
-            </section>
+            <div className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] p-6 shadow-lg">
+              <p className="text-center text-lg font-medium text-stone-800">{statusText}</p>
+            </div>
 
             <section aria-labelledby="user-actions" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <h2 id="user-actions" className="col-span-full text-center text-2xl font-bold text-amber-100">
                 Actions
               </h2>
-              <Button
-                type="button"
-                className="h-16 rounded-2xl border-2 border-red-900 bg-red-800 text-lg font-bold text-white hover:bg-red-900"
-                onClick={() => void emergencyStop()}
-              >
-                <AlertTriangle className="mr-2 h-6 w-6" />
-                Emergency stop
-              </Button>
               <Button
                 type="button"
                 className="h-16 rounded-2xl border-2 border-blue-950 bg-blue-900 text-lg font-bold text-white hover:bg-blue-950"
@@ -708,59 +604,27 @@ export default function CareFeedingApp({
                 <Square className="mr-2 h-6 w-6" />
                 Done
               </Button>
+              <Button
+                type="button"
+                className="h-16 rounded-2xl border-2 border-red-900 bg-red-800 text-lg font-bold text-white hover:bg-red-900"
+                onClick={() => void emergencyStop()}
+              >
+                <AlertTriangle className="mr-2 h-6 w-6" />
+                Emergency stop
+              </Button>
               {doneMessage ? (
                 <p className="col-span-full text-center text-base font-medium text-amber-100" role="status">
                   {doneMessage}
                 </p>
               ) : null}
             </section>
-
-            <div className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] p-6 shadow-lg">
-              <p className="text-center text-lg font-medium text-stone-800">{statusText}</p>
-            </div>
           </>
         ) : (
           <>
-            <section aria-labelledby="food-heading">
-              <h2 id="food-heading" className="mb-3 text-center text-2xl font-bold text-amber-100">
-                Food for the next bite
-              </h2>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {PLATE_SECTIONS.map((food) => {
-                  const active = selectedSection === food.num;
-                  return (
-                    <button
-                      key={food.id}
-                      type="button"
-                      onClick={() => setSelectedSection(food.num)}
-                      className={`min-h-[5.5rem] rounded-2xl border-2 px-4 py-4 text-left transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-200 ${
-                        active
-                          ? "border-blue-950 bg-blue-900 text-white shadow-lg"
-                          : "border-stone-600 bg-[#f5ebe0] text-stone-950 hover:border-stone-800"
-                      }`}
-                    >
-                      <span className="block text-lg font-bold text-amber-200">Section {food.num}</span>
-                      <span className="block text-2xl font-bold">{food.name}</span>
-                      <span
-                        className={`mt-1 block text-base font-medium ${active ? "text-blue-100" : "text-stone-800"}`}
-                      >
-                        {food.hint}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="mt-4 text-center text-lg text-amber-100">
-                Selected:{" "}
-                <strong className="font-bold text-white">
-                  {selectedMeta.name} (section {selectedSection})
-                </strong>
-              </p>
-            </section>
-
             <div className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] p-6 shadow-lg">
-              <p className="text-center text-xl font-bold text-stone-900">Bites: {bitesCompleted}</p>
+              <p className="text-center text-3xl font-black tabular-nums text-stone-950">
+                Bites: {bitesCompleted}
+              </p>
               <p className="mt-2 text-center text-lg font-medium text-stone-800">{statusText}</p>
             </div>
 
@@ -814,54 +678,6 @@ export default function CareFeedingApp({
                 onClick={() => void saveReminderTimes()}
               >
                 Save reminder times
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="h-12 w-full rounded-2xl border-2 border-amber-300/60 bg-amber-100/90 text-base font-semibold text-stone-900 hover:bg-amber-50"
-                onClick={async () => {
-                  const test = buildTestReminderPayload(careRecipientName ?? "the user");
-                  handleInAppAlert({ body: test.body });
-
-                  if (isFcmConfigured()) {
-                    const setup = await setupPushOnThisDevice(getIdToken, role);
-                    if (!setup.ok) {
-                      setScheduleMessage(setup.error ?? "Push setup failed.");
-                      return;
-                    }
-                    const fcm = await sendTestPushFromServer(getIdToken);
-                    if (fcm.ok && (fcm.sent ?? 0) > 0) {
-                      setScheduleMessage(
-                        `FCM test push sent to this device (${setup.tokenPreview}). Check your notification center.`,
-                      );
-                      return;
-                    }
-                    if (fcm.error) {
-                      setScheduleMessage(fcm.error);
-                      return;
-                    }
-                  }
-
-                  const granted = await requestMealReminderPermission();
-                  const pushed = sendTestMealNotification(careRecipientName ?? "the user");
-                  if (granted && pushed) {
-                    setScheduleMessage(
-                      "Test sent — check the yellow banner above and your system notification.",
-                    );
-                  } else if (getNotificationPermission() === "denied") {
-                    setScheduleMessage(notificationBlockedHelp());
-                  } else if (getNotificationPermission() === "unsupported") {
-                    setScheduleMessage(
-                      "This browser cannot show system notifications. Use the yellow banner on this page for reminders.",
-                    );
-                  } else {
-                    setScheduleMessage(
-                      "Yellow banner test shown above. Tap Allow if the browser asks, then try again for a system notification.",
-                    );
-                  }
-                }}
-              >
-                Test notification
               </Button>
               {scheduleMessage ? (
                 <p className="text-center text-base font-medium text-amber-100" role="status">
@@ -960,25 +776,10 @@ export default function CareFeedingApp({
                               {formatDuration(entry.durationMs)}
                             </span>
                           </div>
-                          <p className="mt-2 text-sm font-semibold text-stone-600">
+                          <p className="mt-2 text-base font-semibold text-stone-700">
                             Planned time: {entry.plannedMealTime ?? "—"} · Bites:{" "}
                             <span className="text-stone-950">{entry.bitesTotal}</span>
                           </p>
-                          <p className="mt-2 text-base font-bold text-stone-950">Food by section</p>
-                          <ul className="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2">
-                            {PLATE_SECTIONS.map((sec) => {
-                              const n = entry.bySection[sec.num];
-                              if (n === 0) return null;
-                              return (
-                                <li key={sec.num} className="flex justify-between rounded-lg bg-stone-100 px-3 py-2 text-sm">
-                                  <span>
-                                    <span className="font-black text-blue-900">{sec.num}</span> {sec.name}
-                                  </span>
-                                  <span className="font-bold tabular-nums">{n} bite{n === 1 ? "" : "s"}</span>
-                                </li>
-                              );
-                            })}
-                          </ul>
                           {entry.bitesTotal === 0 ? (
                             <p className="mt-2 text-sm text-stone-600">No bites recorded for this meal.</p>
                           ) : null}

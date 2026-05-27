@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import { withPrisma } from "@/lib/prisma";
 
 export async function ensureUser(
   firebaseUid: string,
@@ -12,7 +12,8 @@ export async function ensureUser(
     dinnerTime?: string | null;
   }
 ) {
-  return prisma.user.upsert({
+  return withPrisma((prisma) =>
+    prisma.user.upsert({
     where: { firebaseUid },
     create: {
       firebaseUid,
@@ -33,5 +34,6 @@ export async function ensureUser(
       ...(opts?.lunchTime != null ? { lunchTime: opts.lunchTime } : {}),
       ...(opts?.dinnerTime != null ? { dinnerTime: opts.dinnerTime } : {}),
     },
-  });
+    }),
+  );
 }

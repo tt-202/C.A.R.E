@@ -149,9 +149,9 @@ export async function requestMealReminderPermission(): Promise<boolean> {
 export function sendTestMealNotification(careRecipientName: string): boolean {
   const name = careRecipientName || "the user";
   return showBrowserNotification(
-    "C.A.R.E — Test reminder",
-    `Notifications work. You'll get alerts ${REMINDER_LEAD_MINUTES} minutes before ${name}'s meals.`,
-    "care-test",
+    "C.A.R.E — Friendly reminder",
+    `You'll get alerts ${REMINDER_LEAD_MINUTES} minutes before ${name}'s meals.`,
+    "care-friendlyreminder",
   );
 }
 

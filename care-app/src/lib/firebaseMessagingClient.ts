@@ -17,6 +17,21 @@ function sleep(ms: number): Promise<void> {
 }
 
 function formatFcmError(e: unknown): string {
+  const raw =
+    e && typeof e === "object" && "message" in e
+      ? String((e as { message: string }).message)
+      : e instanceof Error
+        ? e.message
+        : String(e);
+
+  if (/push service not available/i.test(raw)) {
+    return (
+      "Browser push service is unavailable. Use Chrome or Edge on desktop, quit other npm run dev servers, " +
+      "open only one URL (e.g. http://localhost:3000), then DevTools → Application → Service Workers → Unregister, " +
+      "clear site data, and hard reload."
+    );
+  }
+
   if (e && typeof e === "object" && "code" in e) {
     const code = String((e as { code: string }).code);
     const message = "message" in e ? String((e as { message: string }).message) : "";
@@ -31,7 +46,27 @@ function formatFcmError(e: unknown): string {
     }
     return message ? `${code}: ${message}` : code;
   }
-  return e instanceof Error ? e.message : "Unknown FCM error";
+  return raw || "Unknown FCM error";
+}
+
+async function unregisterStaleFcmWorkers(): Promise<void> {
+  if (!("serviceWorker" in navigator)) return;
+  const regs = await navigator.serviceWorker.getRegistrations();
+  await Promise.all(
+    regs
+      .filter((r) => r.active?.scriptURL.includes("firebase-messaging-sw") ?? false)
+      .map((r) => r.unregister().catch(() => undefined)),
+  );
+}
+
+async function assertPushManagerReady(reg: ServiceWorkerRegistration): Promise<void> {
+  if (!("PushManager" in window)) {
+    throw new Error("PushManager is not available (use Chrome or Edge on desktop)");
+  }
+  if (!reg.pushManager) {
+    throw new Error("Push service not available on this service worker");
+  }
+  await reg.pushManager.getSubscription();
 }
 
 async function waitForServiceWorkerActive(
@@ -112,6 +147,8 @@ async function obtainFcmDeviceTokenImpl(): Promise<FcmTokenResult> {
     return { token: null, error: "Notification permission was not granted" };
   }
 
+  await unregisterStaleFcmWorkers();
+
   const sw = await registerFcmServiceWorker();
   if (!sw) {
     return { token: null, error: "Could not register firebase-messaging-sw.js" };
@@ -120,6 +157,7 @@ async function obtainFcmDeviceTokenImpl(): Promise<FcmTokenResult> {
   try {
     await waitForServiceWorkerActive(sw);
     await navigator.serviceWorker.ready;
+    await assertPushManagerReady(sw);
   } catch (e) {
     return {
       token: null,
@@ -156,14 +194,16 @@ async function obtainFcmDeviceTokenImpl(): Promise<FcmTokenResult> {
     }
   }
 
-  const portHint =
-    typeof window !== "undefined" && window.location.port && window.location.port !== "3000"
-      ? ` You are on port ${window.location.port} — close other dev servers and use one URL only.`
+  const devHint =
+    process.env.NODE_ENV === "development" &&
+    typeof window !== "undefined" &&
+    window.location.hostname === "localhost"
+      ? " Stop every other npm run dev, use one tab on http://localhost:3000 only, unregister service workers, then reload."
       : "";
 
   return {
     token: null,
-    error: `${lastError}.${portHint} Check DevTools → Console for [fcm] and that /firebase-messaging-sw.js returns 200.`,
+    error: `${lastError}.${devHint}`,
   };
 }
 
