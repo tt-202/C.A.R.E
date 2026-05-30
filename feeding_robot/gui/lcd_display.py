@@ -13,7 +13,8 @@ import os
 WINDOW_WIDTH = 1200
 WINDOW_HEIGHT = 700
 
-IMAGE_FOLDER = "images"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+IMAGE_FOLDER = os.path.join(BASE_DIR, "images")
 
 SECTION_IMAGES = {
     1: "section1.png",
@@ -277,7 +278,8 @@ class FeedingRobotGUI:
                 fg="red",
                 font=("Arial", 14)
             )
-        print("Trying to load:", os.path.abspath(image_path))
+        print("Trying to load:", image_path)
+        print("Exists:", os.path.exists(image_path))
     
     # =====================================================
     # UPDATE FUNCTIONS
