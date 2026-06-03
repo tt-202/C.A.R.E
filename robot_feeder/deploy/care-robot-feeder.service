@@ -1,0 +1,19 @@
+[Unit]
+Description=C.A.R.E robot feeder (Firestore + perception + myCobot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jetson
+Group=jetson
+WorkingDirectory=/home/jetson/C.A.R.E/robot_feeder
+EnvironmentFile=/home/jetson/C.A.R.E/robot_feeder/.env
+ExecStart=/home/jetson/C.A.R.E/robot_feeder/venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+# GPIO may need gpio group membership for User=jetson
+SupplementaryGroups=gpio
+
+[Install]
+WantedBy=multi-user.target

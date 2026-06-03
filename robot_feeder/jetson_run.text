@@ -1,0 +1,9 @@
+cd robot_feeder
+cp .env.example .env
+# In .env set GUI_ENABLED=true if HDMI monitor is attached
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+pip install Pillow
+export DISPLAY=:0
+python scripts/test_gui.py
+python main.py
