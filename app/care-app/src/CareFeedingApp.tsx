@@ -554,16 +554,33 @@ export default function CareFeedingApp({
           )}
 
           <h1 className="mt-4 text-3xl font-bold tracking-tight text-white md:text-4xl">Meal helper</h1>
-          {welcomeName ? (
-            <p className="mt-2 text-xl text-amber-100">
-              Welcome, <span className="font-bold text-white">{welcomeName}</span>
-            </p>
-          ) : null}
-          {!isUser && careRecipientName ? (
-            <p className="mt-1 text-base text-amber-100/90">
-              Helping <span className="font-semibold text-white">{careRecipientName}</span>
-            </p>
-          ) : null}
+          {isUser ? (
+            <div className="mt-3 space-y-1">
+              {careRecipientName ? (
+                <p className="text-xl text-amber-100">
+                  User: <span className="font-bold text-white">{careRecipientName}</span>
+                </p>
+              ) : null}
+              {caregiverName ? (
+                <p className="text-xl text-amber-100">
+                  Caregiver: <span className="font-bold text-white">{caregiverName}</span>
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <>
+              {welcomeName ? (
+                <p className="mt-2 text-xl text-amber-100">
+                  Welcome, <span className="font-bold text-white">{welcomeName}</span>
+                </p>
+              ) : null}
+              {careRecipientName ? (
+                <p className="mt-1 text-base text-amber-100/90">
+                  Helping <span className="font-semibold text-white">{careRecipientName}</span>
+                </p>
+              ) : null}
+            </>
+          )}
           <p className={`text-lg text-amber-100/95 ${welcomeName ? "mt-1" : "mt-2"}`}>
             {isUser
               ? "Press Done when you finish your meal."
