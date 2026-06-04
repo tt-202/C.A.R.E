@@ -1,11 +1,22 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Robot commands are created only via Firebase Admin (Vercel API). Jetson uses a service account.
     match /robots/{robotId}/commands/{commandId} {
       allow read, write: if false;
     }
-    // Meal-finished alerts for caregivers: written only via Firebase Admin (Vercel API).
+
+    match /carePairs/{carePairId}/members/{memberUid} {
+      allow read: if request.auth != null && request.auth.uid == memberUid;
+      allow write: if false;
+    }
+
+    match /carePairs/{carePairId}/careAlerts/{docId} {
+      allow read: if request.auth != null
+        && exists(/databases/$(database)/documents/carePairs/$(carePairId)/members/$(request.auth.uid));
+      allow write: if false;
+    }
+
+    // Legacy paths (older deployments)
     match /users/{userId}/careAlerts/{docId} {
       allow read: if request.auth != null && request.auth.uid == userId;
       allow write: if false;

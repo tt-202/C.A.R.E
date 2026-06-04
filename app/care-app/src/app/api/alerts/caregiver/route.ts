@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/authRequest";
+import { getCareContext } from "@/lib/carePair";
 import { getLatestMealFinishedAlert } from "@/lib/careAlertsFirestore";
 
 export async function GET(request: NextRequest) {
   try {
     const ctx = await getAuthContext(request);
+    const careCtx = await getCareContext(ctx.uid, { email: ctx.email, displayName: ctx.name });
+    if (!careCtx.carePairId || careCtx.role !== "caregiver") {
+      return NextResponse.json({ alert: null });
+    }
+
     const sinceRaw = request.nextUrl.searchParams.get("since");
     const since = sinceRaw ? Number(sinceRaw) : 0;
-    const latest = await getLatestMealFinishedAlert(ctx.uid);
+    const latest = await getLatestMealFinishedAlert(careCtx.carePairId);
     if (!latest || latest.finishedAtMs <= since) {
       return NextResponse.json({ alert: null });
     }

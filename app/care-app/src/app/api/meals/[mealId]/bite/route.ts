@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/authRequest";
-import { ensureUser } from "@/lib/ensureUser";
+import { getMealScope, mealOwnershipWhere } from "@/lib/carePair";
 import { prisma } from "@/lib/prisma";
 
 type RouteContext = { params: Promise<{ mealId: string }> };
@@ -9,14 +9,14 @@ export async function POST(request: NextRequest, context: RouteContext) {
   try {
     const { mealId } = await context.params;
     const ctx = await getAuthContext(request);
-    const user = await ensureUser(ctx.uid, { email: ctx.email, displayName: ctx.name });
+    const scope = await getMealScope(ctx.uid, { email: ctx.email, displayName: ctx.name });
     const body = (await request.json()) as { sectionNum?: number };
     const sectionNum = body.sectionNum;
     if (typeof sectionNum !== "number" || sectionNum < 1 || sectionNum > 4) {
       return NextResponse.json({ error: "Invalid section" }, { status: 400 });
     }
     const meal = await prisma.meal.findFirst({
-      where: { id: mealId, userId: user.id },
+      where: { id: mealId, ...mealOwnershipWhere(scope) },
     });
     if (!meal) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });

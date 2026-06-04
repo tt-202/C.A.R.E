@@ -124,9 +124,9 @@ export function useCaregiverMealAlerts({ profileUid, enabled, getIdToken, onAler
       try {
         const auth = getClientAuth();
         const user = auth.currentUser;
-        if (!user || user.uid !== profileUid) return;
+        if (!user) return;
 
-        const ref = doc(getClientFirestore(), "users", profileUid, "careAlerts", "latest");
+        const ref = doc(getClientFirestore(), "carePairs", profileUid, "careAlerts", "latest");
         unsubFirestore = onSnapshot(
           ref,
           (snap) => {

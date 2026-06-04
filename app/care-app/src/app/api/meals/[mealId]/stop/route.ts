@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/authRequest";
-import { ensureUser } from "@/lib/ensureUser";
+import { getMealScope, mealOwnershipWhere } from "@/lib/carePair";
 import { mealToHistoryEntry } from "@/lib/mealDto";
 import { prisma } from "@/lib/prisma";
 
@@ -10,7 +10,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
   try {
     const { mealId } = await context.params;
     const ctx = await getAuthContext(request);
-    const user = await ensureUser(ctx.uid, { email: ctx.email, displayName: ctx.name });
+    const scope = await getMealScope(ctx.uid, { email: ctx.email, displayName: ctx.name });
     let body: { plannedMealTime?: string } = {};
     try {
       body = (await request.json()) as { plannedMealTime?: string };
@@ -18,7 +18,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
       /* empty */
     }
     const meal = await prisma.meal.findFirst({
-      where: { id: mealId, userId: user.id },
+      where: { id: mealId, ...mealOwnershipWhere(scope) },
     });
     if (!meal) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });

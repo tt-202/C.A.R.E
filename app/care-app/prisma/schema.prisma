@@ -7,26 +7,73 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum CareMemberRole {
+  caregiver
+  user
+}
+
 model User {
-  id          String   @id @default(cuid())
-  firebaseUid String   @unique
+  id                 String   @id @default(cuid())
+  firebaseUid        String   @unique
   email              String   @default("")
   displayName        String   @default("")
-  /** Person receiving care (User role). */
+  /** Legacy profile fields — migrated to CarePair when possible. */
   careRecipientName  String   @default("")
-  /** Family or staff helping with meals (Caregiver role). */
   caregiverName      String   @default("")
   breakfastTime      String   @default("08:00")
   lunchTime          String   @default("12:30")
   dinnerTime         String   @default("18:00")
   meals              Meal[]
-  createdAt   DateTime @default(now())
+  createdAt          DateTime @default(now())
+}
+
+model CarePair {
+  id                String           @id @default(cuid())
+  careRecipientName String           @default("")
+  caregiverName     String           @default("")
+  breakfastTime     String           @default("08:00")
+  lunchTime         String           @default("12:30")
+  dinnerTime        String           @default("18:00")
+  members           CarePairMember[]
+  invites           CareInvite[]
+  meals             Meal[]
+  createdAt         DateTime         @default(now())
+}
+
+model CarePairMember {
+  id          String         @id @default(cuid())
+  carePairId  String
+  carePair    CarePair       @relation(fields: [carePairId], references: [id], onDelete: Cascade)
+  firebaseUid String         @unique
+  role        CareMemberRole
+  email       String         @default("")
+  createdAt   DateTime       @default(now())
+
+  @@index([carePairId])
+  @@index([carePairId, role])
+}
+
+model CareInvite {
+  id            String         @id @default(cuid())
+  carePairId    String
+  carePair      CarePair       @relation(fields: [carePairId], references: [id], onDelete: Cascade)
+  code          String         @unique
+  role          CareMemberRole
+  createdByUid  String
+  expiresAt     DateTime
+  acceptedAt    DateTime?
+  acceptedByUid String?
+  createdAt     DateTime       @default(now())
+
+  @@index([carePairId])
 }
 
 model Meal {
   id              String    @id @default(cuid())
-  userId          String
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId          String?
+  user            User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  carePairId      String?
+  carePair        CarePair? @relation(fields: [carePairId], references: [id], onDelete: Cascade)
   startedAt       DateTime
   endedAt         DateTime?
   durationMs      Int?
@@ -39,6 +86,7 @@ model Meal {
   bites           MealBite[]
 
   @@index([userId])
+  @@index([carePairId])
 }
 
 model MealBite {

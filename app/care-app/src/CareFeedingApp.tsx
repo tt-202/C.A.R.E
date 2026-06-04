@@ -28,7 +28,7 @@ import {
   normalizeMealSchedule,
   type MealSchedule,
 } from "@/lib/mealSchedule";
-import { formatProfileSaveError, saveMealSchedule } from "@/lib/saveCareProfile";
+import { formatProfileSaveError, createUserInvite, saveMealSchedule } from "@/lib/saveCareProfile";
 import { notifyCaregiverMealFinished } from "@/lib/notifyCaregiver";
 import { useCaregiverMealAlerts } from "@/hooks/useCaregiverMealAlerts";
 import {
@@ -50,7 +50,10 @@ type CareFeedingAppProps = {
   careRecipientName?: string;
   caregiverName?: string;
   userEmail?: string;
+  firebaseUid?: string;
+  /** Shared care pair id for alerts and meals. */
   profileUid?: string;
+  linkedUser?: boolean;
   initialMealSchedule?: MealSchedule;
   onMealScheduleSaved?: (schedule: MealSchedule) => void;
   /** No API calls — meal history stays in this browser (for local preview without Firebase/DB). */
@@ -72,7 +75,9 @@ export default function CareFeedingApp({
   careRecipientName,
   caregiverName,
   userEmail,
+  firebaseUid,
   profileUid,
+  linkedUser = false,
   initialMealSchedule,
   onMealScheduleSaved,
   previewMode = false,
@@ -84,6 +89,9 @@ export default function CareFeedingApp({
   const welcomeName = isUser
     ? (careRecipientName ?? "User")
     : (caregiverName ?? "Caregiver");
+  const [inviteCode, setInviteCode] = useState<string | null>(null);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteMessage, setInviteMessage] = useState<string | null>(null);
   const [sessionActive, setSessionActive] = useState(false);
   const [bitesCompleted, setBitesCompleted] = useState(0);
   const [mealSchedule, setMealSchedule] = useState<MealSchedule>(() =>
@@ -147,8 +155,8 @@ export default function CareFeedingApp({
   });
 
   useFcmPush({
-    enabled: !previewMode && Boolean(profileUid) && !isUser,
-    profileUid,
+    enabled: !previewMode && Boolean(firebaseUid) && !isUser,
+    profileUid: firebaseUid,
     role,
     getIdToken,
     onForegroundMessage: (body) => handleInAppAlert({ body }),
@@ -183,11 +191,13 @@ export default function CareFeedingApp({
     const ok = await requestMealReminderPermission();
     const normalized = normalizeMealSchedule(mealSchedule);
     const result = await saveMealSchedule(
-      profileUid,
+      firebaseUid ?? profileUid ?? "",
       getIdTokenRef.current,
       careRecipientName,
       caregiverName,
       normalized,
+      role,
+      profileUid ?? "",
     );
     setScheduleBusy(false);
     if (!result.ok) {
@@ -565,6 +575,44 @@ export default function CareFeedingApp({
             </p>
           ) : null}
         </header>
+
+        {!previewMode && !isUser && !linkedUser ? (
+          <Card className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] shadow-lg">
+            <CardContent className="space-y-4 p-6">
+              <h2 className="text-xl font-bold text-stone-950">Invite the user</h2>
+              <p className="text-base text-stone-800">
+                Share this code so they can sign up with their own email and join your care pair.
+              </p>
+              {inviteCode ? (
+                <p className="rounded-2xl border-2 border-stone-600 bg-white px-4 py-4 text-center text-3xl font-bold tracking-[0.3em] text-stone-950">
+                  {inviteCode}
+                </p>
+              ) : null}
+              {inviteMessage ? (
+                <p className="text-center text-base font-medium text-stone-700">{inviteMessage}</p>
+              ) : null}
+              <Button
+                type="button"
+                disabled={inviteBusy}
+                className="h-14 w-full rounded-2xl border-2 border-blue-950 bg-blue-900 text-lg font-semibold text-white hover:bg-blue-950"
+                onClick={async () => {
+                  setInviteBusy(true);
+                  setInviteMessage(null);
+                  const result = await createUserInvite(getIdToken);
+                  setInviteBusy(false);
+                  if (!result.ok) {
+                    setInviteMessage(result.error);
+                    return;
+                  }
+                  setInviteCode(result.code);
+                  setInviteMessage("Code expires in 7 days. They choose Join with invite at sign-in.");
+                }}
+              >
+                {inviteCode ? "Generate new invite code" : "Create invite code"}
+              </Button>
+            </CardContent>
+          </Card>
+        ) : null}
 
         {apiError ? (
           <p

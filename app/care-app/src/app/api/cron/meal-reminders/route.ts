@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { sendPushToUser } from "@/lib/fcmSend";
+import { sendPushToUsers } from "@/lib/fcmSend";
 import { buildMealReminderPush, dueMealReminderSlots } from "@/lib/mealReminderPush";
 import { markReminderSent, wasReminderSent } from "@/lib/reminderSentFirestore";
 import { listFcmTokens } from "@/lib/fcmTokensFirestore";
+import { listCaregiverFirebaseUidsForPair } from "@/lib/carePair";
 
 export async function GET(request: NextRequest) {
   const secret = process.env.CRON_SECRET?.trim();
@@ -13,9 +14,9 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const users = await prisma.user.findMany({
+    const pairs = await prisma.carePair.findMany({
       select: {
-        firebaseUid: true,
+        id: true,
         careRecipientName: true,
         breakfastTime: true,
         lunchTime: true,
@@ -26,18 +27,23 @@ export async function GET(request: NextRequest) {
     let pushed = 0;
     let skipped = 0;
 
-    for (const user of users) {
-      const tokens = await listFcmTokens(user.firebaseUid);
-      if (tokens.length === 0) continue;
+    for (const pair of pairs) {
+      const caregiverUids = await listCaregiverFirebaseUidsForPair(pair.id);
+      if (caregiverUids.length === 0) continue;
+
+      const hasTokens = (
+        await Promise.all(caregiverUids.map((uid) => listFcmTokens(uid)))
+      ).some((tokens) => tokens.length > 0);
+      if (!hasTokens) continue;
 
       const due = dueMealReminderSlots({
-        breakfastTime: user.breakfastTime,
-        lunchTime: user.lunchTime,
-        dinnerTime: user.dinnerTime,
+        breakfastTime: pair.breakfastTime,
+        lunchTime: pair.lunchTime,
+        dinnerTime: pair.dinnerTime,
       });
 
       for (const slot of due) {
-        if (await wasReminderSent(user.firebaseUid, slot.fireKey)) {
+        if (await wasReminderSent(pair.id, slot.fireKey)) {
           skipped += 1;
           continue;
         }
@@ -45,22 +51,22 @@ export async function GET(request: NextRequest) {
         const msg = buildMealReminderPush(
           slot.slotLabel,
           slot.time,
-          user.careRecipientName,
+          pair.careRecipientName,
         );
-        const { sent } = await sendPushToUser(user.firebaseUid, {
+        const { sent } = await sendPushToUsers(caregiverUids, {
           title: msg.title,
           body: msg.body,
           tag: msg.tag,
         });
 
         if (sent > 0) {
-          await markReminderSent(user.firebaseUid, slot.fireKey);
+          await markReminderSent(pair.id, slot.fireKey);
           pushed += 1;
         }
       }
     }
 
-    return NextResponse.json({ ok: true, pushed, skipped, users: users.length });
+    return NextResponse.json({ ok: true, pushed, skipped, pairs: pairs.length });
   } catch (e) {
     console.error(e);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

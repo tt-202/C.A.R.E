@@ -10,16 +10,25 @@ export type MealFinishedAlert = {
   plannedMealTime: string;
 };
 
-function latestAlertRef(userId: string) {
+function pairLatestAlertRef(carePairId: string) {
+  return getFirebaseAdminFirestore()
+    .collection("carePairs")
+    .doc(carePairId)
+    .collection("careAlerts")
+    .doc("latest");
+}
+
+/** Legacy path kept for older deployments during transition. */
+function legacyLatestAlertRef(firebaseUid: string) {
   return getFirebaseAdminFirestore()
     .collection("users")
-    .doc(userId)
+    .doc(firebaseUid)
     .collection("careAlerts")
     .doc("latest");
 }
 
 export async function publishMealFinishedAlert(
-  userId: string,
+  carePairId: string,
   data: Omit<MealFinishedAlert, "type" | "finishedAtMs">,
 ): Promise<MealFinishedAlert> {
   const finishedAtMs = Date.now();
@@ -28,26 +37,36 @@ export async function publishMealFinishedAlert(
     finishedAtMs,
     ...data,
   };
-  await latestAlertRef(userId).set({
+  await pairLatestAlertRef(carePairId).set({
     ...alert,
     updatedAt: FieldValue.serverTimestamp(),
   });
   return alert;
 }
 
-export async function getLatestMealFinishedAlert(userId: string): Promise<MealFinishedAlert | null> {
-  const snap = await latestAlertRef(userId).get();
-  if (!snap.exists) return null;
-  const data = snap.data() as Partial<MealFinishedAlert>;
-  if (data.type !== "meal_finished" || typeof data.finishedAtMs !== "number") {
+export async function getLatestMealFinishedAlert(carePairId: string): Promise<MealFinishedAlert | null> {
+  const snap = await pairLatestAlertRef(carePairId).get();
+  if (snap.exists) {
+    return parseAlertDoc(snap.data());
+  }
+
+  const legacy = await legacyLatestAlertRef(carePairId).get();
+  if (!legacy.exists) return null;
+  return parseAlertDoc(legacy.data());
+}
+
+function parseAlertDoc(data: FirebaseFirestore.DocumentData | undefined): MealFinishedAlert | null {
+  if (!data) return null;
+  const partial = data as Partial<MealFinishedAlert>;
+  if (partial.type !== "meal_finished" || typeof partial.finishedAtMs !== "number") {
     return null;
   }
   return {
     type: "meal_finished",
-    finishedAtMs: data.finishedAtMs,
-    careRecipientName: data.careRecipientName ?? "",
-    caregiverName: data.caregiverName ?? "",
-    bitesTotal: data.bitesTotal ?? 0,
-    plannedMealTime: data.plannedMealTime ?? "",
+    finishedAtMs: partial.finishedAtMs,
+    careRecipientName: partial.careRecipientName ?? "",
+    caregiverName: partial.caregiverName ?? "",
+    bitesTotal: partial.bitesTotal ?? 0,
+    plannedMealTime: partial.plannedMealTime ?? "",
   };
 }

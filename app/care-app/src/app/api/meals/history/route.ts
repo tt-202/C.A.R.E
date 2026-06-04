@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/authRequest";
-import { ensureUser } from "@/lib/ensureUser";
+import { getMealScope, mealOwnershipWhere } from "@/lib/carePair";
 import { mealToHistoryEntry } from "@/lib/mealDto";
 import { prisma } from "@/lib/prisma";
 
 export async function GET(request: NextRequest) {
   try {
     const ctx = await getAuthContext(request);
-    const user = await ensureUser(ctx.uid, { email: ctx.email, displayName: ctx.name });
+    const scope = await getMealScope(ctx.uid, { email: ctx.email, displayName: ctx.name });
     const meals = await prisma.meal.findMany({
-      where: { userId: user.id, endedAt: { not: null } },
+      where: { ...mealOwnershipWhere(scope), endedAt: { not: null } },
       orderBy: { endedAt: "desc" },
     });
     return NextResponse.json({
@@ -30,8 +30,8 @@ export async function GET(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   try {
     const ctx = await getAuthContext(request);
-    const user = await ensureUser(ctx.uid, { email: ctx.email, displayName: ctx.name });
-    await prisma.meal.deleteMany({ where: { userId: user.id } });
+    const scope = await getMealScope(ctx.uid, { email: ctx.email, displayName: ctx.name });
+    await prisma.meal.deleteMany({ where: mealOwnershipWhere(scope) });
     return NextResponse.json({ ok: true });
   } catch (e) {
     if (e instanceof Error && e.message === "Unauthorized") {

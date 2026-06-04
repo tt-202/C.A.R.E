@@ -66,3 +66,20 @@ export async function sendPushToUser(
 
   return { sent, failed, errors };
 }
+
+export async function sendPushToUsers(
+  userIds: string[],
+  payload: PushPayload,
+): Promise<{ sent: number; failed: number; errors: string[] }> {
+  let sent = 0;
+  let failed = 0;
+  const errors: string[] = [];
+  const unique = [...new Set(userIds.filter(Boolean))];
+  for (const userId of unique) {
+    const result = await sendPushToUser(userId, payload);
+    sent += result.sent;
+    failed += result.failed;
+    errors.push(...result.errors);
+  }
+  return { sent, failed, errors };
+}

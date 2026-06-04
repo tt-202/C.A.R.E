@@ -15,25 +15,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { getClientAuth } from "@/lib/firebaseClient";
-import { saveCareProfile } from "@/lib/saveCareProfile";
+import type { CareProfile } from "@/lib/careProfileStorage";
+import {
+  acceptInviteCode,
+  loadProfileFromServer,
+  saveCareProfile,
+} from "@/lib/saveCareProfile";
 
-/**
- * High-contrast, warm cream fields — easier to see than light gray on white
- * (common preference for older adults: warm paper tone + dark text + strong borders).
- */
 const authInputClass =
   "h-14 rounded-2xl border-2 border-stone-600 bg-[#fffefb] text-lg text-stone-950 placeholder:text-stone-500 focus-visible:border-blue-800 focus-visible:ring-2 focus-visible:ring-blue-900/40";
 
 export type UserRole = "caregiver" | "user";
 
-export type AuthUser = {
-  name: string;
-  email: string;
-  /** Set on the screen after login (caregiver vs user). */
-  role?: UserRole;
-};
-
-/** Firebase Auth errors expose `code` (e.g. auth/invalid-api-key); message alone often omits it. */
 function firebaseErrorFingerprint(err: unknown): string {
   if (typeof err === "object" && err !== null && "code" in err) {
     const code = String((err as { code: string }).code);
@@ -45,7 +38,7 @@ function firebaseErrorFingerprint(err: unknown): string {
 
 function mapFirebaseError(raw: string): string {
   if (raw.includes("Firebase client is not configured") || raw.includes("NEXT_PUBLIC_FIREBASE")) {
-    return "App is missing Firebase settings. Add NEXT_PUBLIC_FIREBASE_API_KEY, AUTH_DOMAIN, and PROJECT_ID in .env.local (local) or in Vercel → Settings → Environment Variables, then redeploy.";
+    return "App is missing Firebase settings. Add NEXT_PUBLIC_FIREBASE_* in .env.local or Vercel env vars.";
   }
   if (
     raw.includes("auth/invalid-credential") ||
@@ -61,104 +54,143 @@ function mapFirebaseError(raw: string): string {
     return "Use a stronger password (at least 6 characters).";
   }
   if (raw.includes("auth/invalid-email")) {
-    return "That email address doesn’t look valid.";
+    return "That email address doesn't look valid.";
   }
   if (raw.includes("auth/popup-closed-by-user") || raw.includes("auth/cancelled-popup-request")) {
     return "Sign-in was cancelled.";
-  }
-  if (raw.includes("auth/operation-not-allowed")) {
-    return "That sign-in method is turned off in Firebase. In Firebase Console → Authentication → Sign-in method, enable Email/Password and/or Google.";
-  }
-  if (raw.includes("auth/unauthorized-domain")) {
-    return "This site’s domain is not allowed for Firebase Auth. In Firebase Console → Authentication → Settings → Authorized domains, add this host (e.g. your-app.vercel.app and localhost).";
-  }
-  if (raw.includes("auth/invalid-api-key") || raw.includes("auth/api-key-not-valid")) {
-    return "Firebase API key is missing or wrong. Check NEXT_PUBLIC_FIREBASE_* matches your Firebase project.";
-  }
-  if (raw.includes("auth/network-request-failed")) {
-    return "Could not reach Firebase. Check your network and try again.";
-  }
-  if (raw.includes("auth/too-many-requests")) {
-    return "Too many attempts. Wait a few minutes and try again.";
-  }
-  if (raw.includes("auth/user-disabled")) {
-    return "This account has been disabled.";
   }
   return "Something went wrong. Please try again.";
 }
 
 type AuthPageProps = {
-  /** Called after a successful sign-in so the parent can update immediately (avoids missed auth listener in some Next.js bundles). */
-  onSignedIn?: (user: User) => void;
+  initialMode?: "auth" | "setup";
+  existingUser?: User;
+  onSignedIn?: (user: User, profile?: CareProfile) => void;
+  onSignOut?: () => void;
 };
 
-export default function AuthPage({ onSignedIn }: AuthPageProps) {
+export default function AuthPage({
+  initialMode = "auth",
+  existingUser,
+  onSignedIn,
+  onSignOut,
+}: AuthPageProps) {
+  const [flow, setFlow] = useState<"caregiver" | "join">("caregiver");
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [careRecipientName, setCareRecipientName] = useState("");
   const [caregiverName, setCaregiverName] = useState("");
-  const [email, setEmail] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
+  const [email, setEmail] = useState(existingUser?.email ?? "");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const finishAuth = async (cred: User, profile?: CareProfile | null) => {
+    if (profile) {
+      onSignedIn?.(cred, profile);
+      return;
+    }
+    const loaded = await loadProfileFromServer(cred.uid, () => cred.getIdToken());
+    onSignedIn?.(cred, loaded ?? undefined);
+  };
+
+  const handleJoinAfterAuth = async (cred: User) => {
+    const code = inviteCode.trim().toUpperCase();
+    if (!code) {
+      setError("Enter the invite code from your caregiver.");
+      return false;
+    }
+    const accepted = await acceptInviteCode(() => cred.getIdToken(), code, cred.uid);
+    if (!accepted.ok) {
+      setError(accepted.error);
+      return false;
+    }
+    onSignedIn?.(cred, accepted.profile);
+    return true;
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
 
     const trimmedEmail = email.trim();
-    const trimmedUserName = careRecipientName.trim();
-    const trimmedCaregiverName = caregiverName.trim();
+    if (!trimmedEmail || !password) {
+      setError("Email and password are required.");
+      return;
+    }
+    if (mode === "signup" && password !== confirmPassword) {
+      setError("Passwords do not match. Try again.");
+      return;
+    }
+    if (mode === "signup" && password.length < 6) {
+      setError("Use at least 6 characters for your password.");
+      return;
+    }
 
-    if (!trimmedUserName) {
-      setError("Please enter the user name (person receiving care).");
-      return;
-    }
-    if (!trimmedCaregiverName) {
-      setError("Please enter the caregiver name.");
-      return;
-    }
-    if (!trimmedEmail) {
-      setError("Please enter your email.");
-      return;
-    }
-    if (!password) {
-      setError("Please enter a password.");
-      return;
-    }
-    if (mode === "signup") {
-      if (password !== confirmPassword) {
-        setError("Passwords do not match. Try again.");
+    if (flow === "caregiver") {
+      const trimmedUserName = careRecipientName.trim();
+      const trimmedCaregiverName = caregiverName.trim();
+      if (!trimmedUserName || !trimmedCaregiverName) {
+        setError("Enter both the user name and caregiver name.");
         return;
       }
-      if (password.length < 6) {
-        setError("Use at least 6 characters for your password.");
-        return;
-      }
+    } else if (!inviteCode.trim()) {
+      setError("Enter the invite code from your caregiver.");
+      return;
     }
 
     setBusy(true);
     try {
+      if (existingUser && initialMode === "setup") {
+        if (flow === "join") {
+          await handleJoinAfterAuth(existingUser);
+        } else {
+          const profile = await saveCareProfile(
+            existingUser.uid,
+            () => existingUser.getIdToken(),
+            "caregiver",
+            careRecipientName.trim(),
+            caregiverName.trim(),
+          );
+          if (!profile) {
+            setError("Could not create your care pair. Try again.");
+            return;
+          }
+          onSignedIn?.(existingUser, profile);
+        }
+        return;
+      }
+
       const auth = getClientAuth();
+      let cred: User;
       if (mode === "signup") {
-        const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
-        await updateProfile(cred.user, { displayName: trimmedCaregiverName });
-        await saveCareProfile(
-          cred.user.uid,
-          () => cred.user.getIdToken(),
-          trimmedUserName,
-          trimmedCaregiverName,
-        );
-        onSignedIn?.(cred.user);
+        cred = (await createUserWithEmailAndPassword(auth, trimmedEmail, password)).user;
+        if (flow === "caregiver") {
+          await updateProfile(cred, { displayName: caregiverName.trim() });
+        }
       } else {
-        const cred = await signInWithEmailAndPassword(auth, trimmedEmail, password);
-        await saveCareProfile(
-          cred.user.uid,
-          () => cred.user.getIdToken(),
-          trimmedUserName,
-          trimmedCaregiverName,
+        cred = (await signInWithEmailAndPassword(auth, trimmedEmail, password)).user;
+      }
+
+      if (flow === "join") {
+        const ok = await handleJoinAfterAuth(cred);
+        if (!ok) return;
+      } else if (mode === "signup") {
+        const profile = await saveCareProfile(
+          cred.uid,
+          () => cred.getIdToken(),
+          "caregiver",
+          careRecipientName.trim(),
+          caregiverName.trim(),
         );
-        onSignedIn?.(cred.user);
+        if (!profile) {
+          setError("Could not create your care pair. Try again.");
+          return;
+        }
+        onSignedIn?.(cred, profile);
+      } else {
+        await finishAuth(cred);
       }
     } catch (err: unknown) {
       setError(mapFirebaseError(firebaseErrorFingerprint(err)));
@@ -169,34 +201,53 @@ export default function AuthPage({ onSignedIn }: AuthPageProps) {
 
   const handleGoogle = async () => {
     setError(null);
-    const trimmedUserName = careRecipientName.trim();
-    const trimmedCaregiverName = caregiverName.trim();
-    if (!trimmedUserName) {
-      setError("Please enter the user name (person receiving care).");
+    if (flow === "caregiver") {
+      if (!careRecipientName.trim() || !caregiverName.trim()) {
+        setError("Enter both names before continuing with Google.");
+        return;
+      }
+    } else if (!inviteCode.trim()) {
+      setError("Enter the invite code before continuing with Google.");
       return;
     }
-    if (!trimmedCaregiverName) {
-      setError("Please enter the caregiver name.");
-      return;
-    }
+
     setBusy(true);
     try {
       const auth = getClientAuth();
       const provider = new GoogleAuthProvider();
       const cred = await signInWithPopup(auth, provider);
-      await saveCareProfile(
-        cred.user.uid,
-        () => cred.user.getIdToken(),
-        trimmedUserName,
-        trimmedCaregiverName,
-      );
-      onSignedIn?.(cred.user);
+
+      if (flow === "join") {
+        const ok = await handleJoinAfterAuth(cred.user);
+        if (!ok) return;
+      } else {
+        const profile = await saveCareProfile(
+          cred.user.uid,
+          () => cred.user.getIdToken(),
+          "caregiver",
+          careRecipientName.trim(),
+          caregiverName.trim(),
+        );
+        if (!profile) {
+          setError("Could not create your care pair. Try again.");
+          return;
+        }
+        onSignedIn?.(cred.user, profile);
+      }
     } catch (err: unknown) {
       setError(mapFirebaseError(firebaseErrorFingerprint(err)));
     } finally {
       setBusy(false);
     }
   };
+
+  const showNames = flow === "caregiver";
+  const title =
+    initialMode === "setup"
+      ? "Finish setting up C.A.R.E"
+      : mode === "login"
+        ? "Welcome back"
+        : "Create your account";
 
   return (
     <div className="min-h-screen p-4 pb-12 md:flex md:items-center md:justify-center md:p-8">
@@ -213,128 +264,170 @@ export default function AuthPage({ onSignedIn }: AuthPageProps) {
 
         <Card className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] text-stone-950 shadow-xl ring-0">
           <CardContent className="p-6 md:p-8">
-            <p className="mb-4 text-center text-xl font-bold text-stone-950">
-              {mode === "login" ? "Welcome back" : "Create your account"}
-            </p>
+            <p className="mb-4 text-center text-xl font-bold text-stone-950">{title}</p>
 
             <div className="mb-6 grid grid-cols-2 gap-3">
               <Button
                 type="button"
                 className={cn(
-                  "h-14 rounded-2xl border-2 text-lg font-semibold",
-                  mode === "login"
+                  "h-14 rounded-2xl border-2 text-base font-semibold md:text-lg",
+                  flow === "caregiver"
                     ? "border-blue-950 bg-blue-900 text-white shadow-md hover:bg-blue-950"
-                    : "border-stone-600 bg-stone-200 text-stone-900 hover:bg-stone-100"
+                    : "border-stone-600 bg-stone-200 text-stone-900 hover:bg-stone-100",
                 )}
                 onClick={() => {
-                  setMode("login");
+                  setFlow("caregiver");
                   setError(null);
                 }}
               >
-                Log in
+                I'm the caregiver
               </Button>
               <Button
                 type="button"
                 className={cn(
-                  "h-14 rounded-2xl border-2 text-lg font-semibold",
-                  mode === "signup"
+                  "h-14 rounded-2xl border-2 text-base font-semibold md:text-lg",
+                  flow === "join"
                     ? "border-blue-950 bg-blue-900 text-white shadow-md hover:bg-blue-950"
-                    : "border-stone-600 bg-stone-200 text-stone-900 hover:bg-stone-100"
+                    : "border-stone-600 bg-stone-200 text-stone-900 hover:bg-stone-100",
                 )}
                 onClick={() => {
-                  setMode("signup");
+                  setFlow("join");
                   setError(null);
                 }}
               >
-                Sign up
+                Join with invite
               </Button>
             </div>
 
+            {!existingUser ? (
+              <div className="mb-6 grid grid-cols-2 gap-3">
+                <Button
+                  type="button"
+                  className={cn(
+                    "h-12 rounded-2xl border-2 text-base font-semibold",
+                    mode === "login"
+                      ? "border-stone-700 bg-stone-800 text-white"
+                      : "border-stone-500 bg-stone-100 text-stone-900",
+                  )}
+                  onClick={() => {
+                    setMode("login");
+                    setError(null);
+                  }}
+                >
+                  Log in
+                </Button>
+                <Button
+                  type="button"
+                  className={cn(
+                    "h-12 rounded-2xl border-2 text-base font-semibold",
+                    mode === "signup"
+                      ? "border-stone-700 bg-stone-800 text-white"
+                      : "border-stone-500 bg-stone-100 text-stone-900",
+                  )}
+                  onClick={() => {
+                    setMode("signup");
+                    setError(null);
+                  }}
+                >
+                  Sign up
+                </Button>
+              </div>
+            ) : null}
+
             <form onSubmit={handleSubmit} className="space-y-5">
-              <div>
-                <label htmlFor="auth-user-name" className="mb-2 block text-lg font-semibold text-stone-900">
-                  User name
-                </label>
-                <p className="mb-2 text-sm font-medium text-stone-700">
-                  Person receiving care (using the User section of the app).
-                </p>
-                <Input
-                  id="auth-user-name"
-                  name="careRecipientName"
-                  autoComplete="name"
-                  value={careRecipientName}
-                  onChange={(e) => setCareRecipientName(e.target.value)}
-                  placeholder="e.g. Alex Carter"
-                  className={authInputClass}
-                />
-              </div>
-
-              <div>
-                <label htmlFor="auth-caregiver-name" className="mb-2 block text-lg font-semibold text-stone-900">
-                  Caregiver name
-                </label>
-                <p className="mb-2 text-sm font-medium text-stone-700">
-                  Family or staff helping with meals.
-                </p>
-                <Input
-                  id="auth-caregiver-name"
-                  name="caregiverName"
-                  autoComplete="name"
-                  value={caregiverName}
-                  onChange={(e) => setCaregiverName(e.target.value)}
-                  placeholder="e.g. Sam Carter"
-                  className={authInputClass}
-                />
-              </div>
-
-              <div>
-                <label htmlFor="auth-email" className="mb-2 block text-lg font-semibold text-stone-900">
-                  Email
-                </label>
-                <Input
-                  id="auth-email"
-                  name="email"
-                  type="email"
-                  autoComplete="email"
-                  inputMode="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  className={authInputClass}
-                />
-              </div>
-
-              <div>
-                <label htmlFor="auth-password" className="mb-2 block text-lg font-semibold text-stone-900">
-                  Password
-                </label>
-                <Input
-                  id="auth-password"
-                  name="password"
-                  type="password"
-                  autoComplete={mode === "login" ? "current-password" : "new-password"}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className={authInputClass}
-                />
-              </div>
-
-              {mode === "signup" && (
+              {flow === "join" ? (
                 <div>
-                  <label htmlFor="auth-confirm" className="mb-2 block text-lg font-semibold text-stone-900">
-                    Confirm password
+                  <label htmlFor="auth-invite" className="mb-2 block text-lg font-semibold text-stone-900">
+                    Invite code
                   </label>
+                  <p className="mb-2 text-sm font-medium text-stone-700">
+                    Ask your caregiver for the code — you'll use your own email to sign in.
+                  </p>
                   <Input
-                    id="auth-confirm"
-                    name="confirmPassword"
-                    type="password"
-                    autoComplete="new-password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    className={authInputClass}
+                    id="auth-invite"
+                    name="inviteCode"
+                    value={inviteCode}
+                    onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+                    placeholder="e.g. A1B2C3D4"
+                    className={cn(authInputClass, "uppercase tracking-widest")}
                   />
                 </div>
-              )}
+              ) : null}
+
+              {showNames ? (
+                <>
+                  <div>
+                    <label htmlFor="auth-user-name" className="mb-2 block text-lg font-semibold text-stone-900">
+                      User name
+                    </label>
+                    <Input
+                      id="auth-user-name"
+                      value={careRecipientName}
+                      onChange={(e) => setCareRecipientName(e.target.value)}
+                      placeholder="Person receiving care"
+                      className={authInputClass}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="auth-caregiver-name" className="mb-2 block text-lg font-semibold text-stone-900">
+                      Your name (caregiver)
+                    </label>
+                    <Input
+                      id="auth-caregiver-name"
+                      value={caregiverName}
+                      onChange={(e) => setCaregiverName(e.target.value)}
+                      placeholder="Your name"
+                      className={authInputClass}
+                    />
+                  </div>
+                </>
+              ) : null}
+
+              {!existingUser ? (
+                <>
+                  <div>
+                    <label htmlFor="auth-email" className="mb-2 block text-lg font-semibold text-stone-900">
+                      Email
+                    </label>
+                    <Input
+                      id="auth-email"
+                      type="email"
+                      autoComplete="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      className={authInputClass}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="auth-password" className="mb-2 block text-lg font-semibold text-stone-900">
+                      Password
+                    </label>
+                    <Input
+                      id="auth-password"
+                      type="password"
+                      autoComplete={mode === "login" ? "current-password" : "new-password"}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className={authInputClass}
+                    />
+                  </div>
+                  {mode === "signup" ? (
+                    <div>
+                      <label htmlFor="auth-confirm" className="mb-2 block text-lg font-semibold text-stone-900">
+                        Confirm password
+                      </label>
+                      <Input
+                        id="auth-confirm"
+                        type="password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        className={authInputClass}
+                      />
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
 
               {error ? (
                 <p
@@ -350,22 +443,46 @@ export default function AuthPage({ onSignedIn }: AuthPageProps) {
                 disabled={busy}
                 className="h-16 w-full rounded-2xl border-2 border-blue-950 bg-blue-900 text-xl font-semibold text-white shadow-md hover:bg-blue-950 disabled:opacity-60"
               >
-                {mode === "login" ? "Log in" : "Create account"}
+                {flow === "join"
+                  ? existingUser
+                    ? "Join care pair"
+                    : mode === "login"
+                      ? "Log in and join"
+                      : "Sign up and join"
+                  : existingUser
+                    ? "Create care pair"
+                    : mode === "login"
+                      ? "Log in"
+                      : "Create account"}
               </Button>
             </form>
 
-            <div className="mt-6">
-              <p className="mb-3 text-center text-base font-semibold text-stone-700">Or continue with</p>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy}
-                className="h-14 w-full rounded-2xl border-2 border-stone-600 bg-[#fffefb] text-lg font-semibold text-stone-900 hover:bg-stone-50 disabled:opacity-60"
-                onClick={handleGoogle}
-              >
-                Google
-              </Button>
-            </div>
+            {!existingUser ? (
+              <div className="mt-6">
+                <p className="mb-3 text-center text-base font-semibold text-stone-700">Or continue with</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy}
+                  className="h-14 w-full rounded-2xl border-2 border-stone-600 bg-[#fffefb] text-lg font-semibold text-stone-900 hover:bg-stone-50 disabled:opacity-60"
+                  onClick={handleGoogle}
+                >
+                  Google
+                </Button>
+              </div>
+            ) : null}
+
+            {existingUser && onSignOut ? (
+              <p className="mt-6 text-center">
+                <button
+                  type="button"
+                  className="text-lg font-medium text-stone-700 underline underline-offset-4"
+                  onClick={onSignOut}
+                >
+                  Sign out
+                </button>
+              </p>
+            ) : null}
           </CardContent>
         </Card>
       </div>
