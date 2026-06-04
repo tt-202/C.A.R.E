@@ -1,9 +1,9 @@
 firebase-admin>=6.5.0
 Pillow>=10.0.0
 pupil-apriltags>=1.0.0
-# Jetson hardware / vision (install as needed):
+# Vision (Mac/Jetson — install for YOLO tests):
+# pip install ultralytics opencv-python "numpy<2"
 # pymycobot
-# opencv-python
-# ultralytics
 # mediapipe
+# RPi.GPIO
 # RPi.GPIO

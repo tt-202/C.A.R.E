@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class YoloDetector:
-    def __init__(self, model_path: str = "models/food.pt") -> None:
+    def __init__(self, model_path: str = "perception/best.pt") -> None:
         self.model_path = model_path
         self._model: Any = None
 
@@ -28,12 +28,22 @@ class YoloDetector:
         logger.info("Loaded YOLO model %s", path)
         return True
 
+    # Class names in perception/best.pt (custom train)
+    FOOD_CLASS_NAMES = frozenset({"Plate with food", "Spoon with food"})
+
     def detect_food(self, frame: Any) -> bool:
-        """Return True if at least one food-class detection is present."""
+        """True if model sees plate or spoon with food (not empty plate/spoon)."""
         if self._model is None or frame is None:
             return False
         results = self._model(frame, verbose=False)
         if not results:
             return False
         boxes = results[0].boxes
-        return boxes is not None and len(boxes) > 0
+        if boxes is None or len(boxes) == 0:
+            return False
+        names = self._model.names or {}
+        for cls_id in boxes.cls.tolist():
+            label = names.get(int(cls_id), "")
+            if label in self.FOOD_CLASS_NAMES:
+                return True
+        return False

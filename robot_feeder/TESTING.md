@@ -20,12 +20,13 @@ cp .env.example .env
 | 1 | `python scripts/test_camera.py` | CSI/USB camera opens, live window |
 | 2 | `python scripts/test_apriltag_live.py` | AprilTag → section 1–4 overlay on plate view |
 | 3 | `python scripts/test_yolo_live.py` | YOLO draws boxes; `FOOD: YES/NO` overlay |
-| 4 | `python scripts/test_face_live.py` | Face detected, mouth open, offset |
-| 5 | `python scripts/test_arm_motion.py` | Plate → scoop → user → home (logs if `DRY_RUN=true`) |
-| 6 | `BUTTONS_ENABLED=true python scripts/test_gpio.py` | Feed / plate / e-stop prints |
-| 7 | `python scripts/test_firebase_command.py` | Firestore commands from care-app |
-| 8 | `python scripts/test_states_interactive.py` | Full state machine; type `feed` / `stop` |
-| 9 | `python main.py` | Production loop (all pieces together) |
+| 4 | `python scripts/test_tof.py` | Distance mm + safety range (mock or real sensor) |
+| 5 | `python scripts/test_face_live.py` | Face detected, mouth open, offset |
+| 6 | `python scripts/test_arm_motion.py` | Plate → scoop → user → home (logs if `DRY_RUN=true`) |
+| 7 | `BUTTONS_ENABLED=true python scripts/test_gpio.py` | Feed / plate / e-stop prints |
+| 8 | `python scripts/test_firebase_command.py` | Firestore commands from care-app |
+| 9 | `python scripts/test_states_interactive.py` | Full state machine; type `feed` / `stop` |
+| 10 | `python main.py` | Production loop (all pieces together) |
 
 Press **Q** in OpenCV windows to exit.
 

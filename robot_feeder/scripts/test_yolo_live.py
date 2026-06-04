@@ -24,7 +24,7 @@ def main() -> int:
     yolo = YoloDetector(model_path=settings.yolo_model_path)
     if not yolo.load():
         print(f"FAIL: YOLO model at {settings.yolo_model_path}")
-        print("  Put your .pt file there (e.g. copy jetson_controller best.pt → models/food.pt)")
+        print("  Set YOLO_MODEL_PATH=perception/best.pt in robot_feeder/.env")
         return 1
 
     import cv2
