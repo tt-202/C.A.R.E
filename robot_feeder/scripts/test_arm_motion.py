@@ -17,6 +17,11 @@ from robot.mycobot_controller import MyCobotController
 def main() -> int:
     settings = load_settings()
     print(f"DRY_RUN={settings.dry_run} port={settings.mycobot_port}")
+    if settings.dry_run:
+        print("  Arm will NOT move while DRY_RUN is true.")
+        print("  Fix: in robot_feeder/.env set DRY_RUN=false")
+        print("  Or run: DRY_RUN=false python scripts/test_arm_motion.py")
+        print("  If .env is correct but this stays true: unset DRY_RUN  # shell override")
     if not settings.dry_run:
         confirm = input("Arm will move. Type YES to continue: ")
         if confirm.strip() != "YES":

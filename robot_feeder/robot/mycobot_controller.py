@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class MyCobotController:
-    def __init__(self, port: str = "/dev/ttyUSB0", baud: int = 115200, *, dry_run: bool = True) -> None:
+    def __init__(self, port: str = "/dev/ttyACM0", baud: int = 115200, *, dry_run: bool = True) -> None:
         self.port = port
         self.baud = baud
         self.dry_run = dry_run

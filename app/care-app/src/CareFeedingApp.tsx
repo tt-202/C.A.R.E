@@ -695,15 +695,6 @@ export default function CareFeedingApp({
               <h2 id="schedule-heading" className="text-center text-2xl font-bold text-amber-100">
                 Meal reminders
               </h2>
-              <p className="text-center text-base font-medium text-amber-100/90">
-                Set meal times for{" "}
-                <span className="font-semibold text-white">{careRecipientName ?? "the user"}</span>.
-                You&apos;ll get a notification <span className="font-semibold text-white">15 minutes before</span>{" "}
-                each meal, and another when they tap <span className="font-semibold text-white">Done</span>.
-                {isFcmConfigured()
-                  ? "Firebase push is on — allow notifications when asked. Background alerts use your saved meal times."
-                  : "Add NEXT_PUBLIC_FIREBASE_VAPID_KEY for background push, or keep this tab open for in-app alerts."}
-              </p>
 
               <div className="space-y-3">
                 {MEAL_SLOTS.map((slot) => (
