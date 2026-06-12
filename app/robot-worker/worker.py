@@ -24,6 +24,7 @@ from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from robot_motion import execute_command
+from robot_stats import mark_jetson_online, record_failed_feed, record_successful_bite, set_live_state
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("care-robot-worker")
@@ -92,12 +93,24 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
     if not claim_command(db, ref):
         return
     payload = data.get("payload")
+    rid = robot_id()
     try:
         execute_command(str(cmd), payload if isinstance(payload, dict) else None)
         finish_command(ref, ok=True)
+        if cmd == "next_bite":
+            section = 1
+            if isinstance(payload, dict) and isinstance(payload.get("sectionNum"), int):
+                section = payload["sectionNum"]
+            record_successful_bite(db, rid, section)
+        elif cmd == "stop":
+            set_live_state(db, rid, state="IDLE", emergency=True)
+        elif cmd in ("home", "pause"):
+            set_live_state(db, rid, state="IDLE", emergency=False)
         logger.info("done %s cmd=%s", snap.id, cmd)
     except Exception as e:
         logger.exception("command %s failed", snap.id)
+        record_failed_feed(db, rid)
+        set_live_state(db, rid, state="ERROR", emergency=False)
         finish_command(ref, ok=False, error=str(e))
 
 
@@ -112,6 +125,8 @@ def main() -> int:
         firebase_admin.initialize_app(cred)
 
     db = firestore.client()
+    rid = robot_id()
+    mark_jetson_online(db, rid)
     col = commands_col(db)
     query = col.where(filter=FieldFilter("status", "==", "pending"))
 

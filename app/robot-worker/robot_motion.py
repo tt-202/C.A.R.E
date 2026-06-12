@@ -18,7 +18,7 @@ def _dry_run() -> bool:
 
 def _get_arm():
     """Return pymycobot instance when available."""
-    port = os.environ.get("MYCOBOT_PORT", "/dev/ttyACM0")
+    port = os.environ.get("MYCOBOT_PORT", "/dev/ttyAMA0")
     baud = int(os.environ.get("MYCOBOT_BAUD", "115200"))
     try:
         from pymycobot.mycobot320 import MyCobot320  # type: ignore[import-not-found]

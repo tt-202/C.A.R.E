@@ -49,6 +49,18 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
+## Firestore stats (care-app live UI)
+
+The caregiver app listens under `robots/{ROBOT_ID}/`:
+
+| Document | Fields |
+|----------|--------|
+| `status/live` | `state`, `bite_count`, `section`, `emergency`, `jetson_online`, `last_feed_time` |
+| `stats/feed_counts` | `total_bites`, `successful_feeds`, `failed_feeds` |
+| `status/button_input` | `eat_pressed`, `stop_pressed`, `last_pin` |
+
+The worker updates these automatically after each command (`robot_stats.py`).
+
 ## Customize motion
 
 Edit `robot_motion.py` — replace the `next_bite` placeholder angles with your safe feeding trajectory.

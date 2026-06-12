@@ -44,6 +44,24 @@ import {
   minutesUntilNextReminder,
   scheduleLocalMealReminders,
 } from "@/lib/scheduleLocalMealReminders";
+import { type Timestamp } from "firebase/firestore";
+import { isFirebaseConfigured } from "@/lib/firebaseClient";
+import { useRobotFirestore } from "@/hooks/useRobotFirestore";
+import { getPublicRobotId } from "@/lib/robot";
+import { feedCountTotal } from "@/lib/robotFirestorePaths";
+
+function formatFirestoreTime(value: unknown): string {
+  if (!value) return "—";
+  if (typeof value === "object" && value !== null && "toDate" in value) {
+    const ts = value as Timestamp;
+    if (typeof ts.toDate === "function") return ts.toDate().toLocaleString();
+  }
+  if (typeof value === "object" && value !== null && "seconds" in value) {
+    const seconds = (value as { seconds?: number }).seconds;
+    if (typeof seconds === "number") return new Date(seconds * 1000).toLocaleString();
+  }
+  return "—";
+}
 
 type CareFeedingAppProps = {
   role: UserRole;
@@ -104,6 +122,12 @@ export default function CareFeedingApp({
   const [apiError, setApiError] = useState<string | null>(null);
   const [doneMessage, setDoneMessage] = useState<string | null>(null);
   const [startBusy, setStartBusy] = useState(false);
+  const robotId = getPublicRobotId();
+  const { live: robotLive, feedCounts: robotFeedCounts, buttonInput: robotButtons, error: robotListenError } =
+    useRobotFirestore({
+      robotId,
+      enabled: !previewMode && !isUser && isFirebaseConfigured(),
+    });
 
   const mealStartedAtRef = useRef<number | null>(null);
   const plannedMealTimeRef = useRef(
@@ -592,6 +616,57 @@ export default function CareFeedingApp({
             </p>
           ) : null}
         </header>
+
+        {!previewMode && !isUser ? (
+          <Card className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] shadow-lg">
+            <CardContent className="space-y-3 p-5">
+              <h2 className="text-lg font-bold text-stone-950">Robot live status</h2>
+              <p className="text-sm font-medium text-stone-700">
+                Firestore <span className="font-mono text-stone-900">robots/{robotId}</span> — updates when the Jetson
+                writes stats.
+              </p>
+              {robotListenError ? (
+                <p className="rounded-xl border-2 border-red-700 bg-red-100 px-3 py-2 text-sm font-medium text-red-950">
+                  {robotListenError}
+                </p>
+              ) : null}
+              <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
+                <dt className="font-semibold text-stone-700">Jetson online</dt>
+                <dd className="font-bold text-stone-950">
+                  {robotLive?.jetson_online ? "Yes" : robotLive ? "No" : "Waiting…"}
+                </dd>
+                <dt className="font-semibold text-stone-700">Robot state</dt>
+                <dd className="font-bold text-stone-950">{robotLive?.state ?? "—"}</dd>
+                <dt className="font-semibold text-stone-700">Bites completed</dt>
+                <dd className="font-bold text-stone-950">{feedCountTotal(robotFeedCounts)}</dd>
+                <dt className="font-semibold text-stone-700">Current section</dt>
+                <dd className="font-bold text-stone-950">
+                  {typeof robotLive?.section === "number" ? robotLive.section : "—"}
+                </dd>
+                <dt className="font-semibold text-stone-700">Emergency</dt>
+                <dd className="font-bold text-stone-950">
+                  {robotLive?.emergency ? "Yes" : robotLive ? "No" : "—"}
+                </dd>
+                <dt className="font-semibold text-stone-700">Successful feeds</dt>
+                <dd className="font-bold text-stone-950">{robotFeedCounts?.successful_feeds ?? "—"}</dd>
+                <dt className="font-semibold text-stone-700">Failed feeds</dt>
+                <dd className="font-bold text-stone-950">{robotFeedCounts?.failed_feeds ?? "—"}</dd>
+                <dt className="font-semibold text-stone-700">Eat pressed</dt>
+                <dd className="font-bold text-stone-950">
+                  {robotButtons?.eat_pressed ? "Yes" : robotButtons ? "No" : "—"}
+                </dd>
+                <dt className="font-semibold text-stone-700">Stop pressed</dt>
+                <dd className="font-bold text-stone-950">
+                  {robotButtons?.stop_pressed ? "Yes" : robotButtons ? "No" : "—"}
+                </dd>
+                <dt className="col-span-2 font-semibold text-stone-700">Last feed</dt>
+                <dd className="col-span-2 font-bold text-stone-950">
+                  {formatFirestoreTime(robotLive?.last_feed_time)}
+                </dd>
+              </dl>
+            </CardContent>
+          </Card>
+        ) : null}
 
         {!previewMode && !isUser && !linkedUser ? (
           <Card className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] shadow-lg">

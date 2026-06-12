@@ -82,3 +82,8 @@ export function getClientFirestore(): Firestore {
   }
   return firestore;
 }
+
+/** Alias for getClientFirestore — used by live Jetson GPIO listeners. */
+export function getClientDb(): Firestore {
+  return getClientFirestore();
+}

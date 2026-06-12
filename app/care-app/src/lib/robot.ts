@@ -17,3 +17,8 @@ export function isRobotCommandType(value: string): value is RobotCommandType {
 export function getRobotId(): string {
   return process.env.ROBOT_ID?.trim() || "care-01";
 }
+
+/** Robot id for browser Firestore listeners (must match Jetson ROBOT_ID). */
+export function getPublicRobotId(): string {
+  return process.env.NEXT_PUBLIC_ROBOT_ID?.trim() || getRobotId();
+}

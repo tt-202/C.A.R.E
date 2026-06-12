@@ -5,6 +5,16 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /robots/{robotId}/status/{docId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    match /robots/{robotId}/stats/{docId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
     match /carePairs/{carePairId}/members/{memberUid} {
       allow read: if request.auth != null && request.auth.uid == memberUid;
       allow write: if false;

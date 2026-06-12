@@ -60,7 +60,7 @@ def load_settings() -> Settings:
     _load_dotenv()
     return Settings(
         robot_id=os.environ.get("ROBOT_ID", "care-01").strip() or "care-01",
-        mycobot_port=os.environ.get("MYCOBOT_PORT", "/dev/ttyACM0"),
+        mycobot_port=os.environ.get("MYCOBOT_PORT", "/dev/ttyAMA0"),
         mycobot_baud=int(os.environ.get("MYCOBOT_BAUD", "115200")),
         dry_run=_env_bool("DRY_RUN", default=True),
         camera_device_id=int(os.environ.get("CAMERA_DEVICE_ID", "0")),
