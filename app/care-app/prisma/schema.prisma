@@ -83,6 +83,8 @@ model Meal {
   section2Count   Int       @default(0)
   section3Count   Int       @default(0)
   section4Count   Int       @default(0)
+  /** Last physical feed-button sequence synced from the robot (dedupes multi-device listeners). */
+  lastFeedPressSeq Int      @default(0)
   bites           MealBite[]
 
   @@index([userId])

@@ -82,7 +82,7 @@ export async function scheduleLocalMealReminders(
   return { scheduled, supported: true };
 }
 
-/** Minutes until the next 15-min-early reminder. */
+/** Minutes until the next early reminder (REMINDER_LEAD_MINUTES before meal). */
 export function minutesUntilNextReminder(schedule: MealSchedule, now = new Date()): number | null {
   const nowMins = now.getHours() * 60 + now.getMinutes();
   let best: number | null = null;

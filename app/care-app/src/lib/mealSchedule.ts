@@ -52,3 +52,54 @@ export function activeMealSlot(now: Date, schedule: MealSchedule): { label: stri
 export function formatPlannedMealTime(label: string, time: string): string {
   return `${label} ${time}`;
 }
+
+export function parsePlannedMealLabel(planned: string | undefined | null): string | null {
+  if (!planned) return null;
+  for (const slot of MEAL_SLOTS) {
+    if (planned.startsWith(slot.label)) return slot.label;
+  }
+  return null;
+}
+
+/** First meal slot at or after the current clock time (for starting a new session). */
+export function upcomingMealSlot(now: Date, schedule: MealSchedule): { label: string; time: string } {
+  const nowMins = now.getHours() * 60 + now.getMinutes();
+  for (const slot of MEAL_SLOTS) {
+    const mins = timeToMinutes(schedule[slot.field]);
+    if (mins >= nowMins) {
+      return { label: slot.label, time: schedule[slot.field] };
+    }
+  }
+  return { label: MEAL_SLOTS[0].label, time: schedule[MEAL_SLOTS[0].field] };
+}
+
+export type PlannedMealSlot = { label: string; time: string; note?: "tomorrow" };
+
+/** After a meal ends, move to the next slot on the daily schedule. */
+export function nextMealSlotAfter(
+  completedLabel: string | null,
+  schedule: MealSchedule,
+  now: Date = new Date(),
+): PlannedMealSlot {
+  const slots = MEAL_SLOTS.map((s) => ({
+    label: s.label,
+    time: schedule[s.field],
+  }));
+
+  if (completedLabel) {
+    const idx = MEAL_SLOTS.findIndex((s) => s.label === completedLabel);
+    if (idx >= 0 && idx < MEAL_SLOTS.length - 1) {
+      return slots[idx + 1];
+    }
+    if (idx === MEAL_SLOTS.length - 1) {
+      return { ...slots[0], note: "tomorrow" };
+    }
+  }
+
+  return upcomingMealSlot(now, schedule);
+}
+
+export function formatPlannedMealDisplay(slot: PlannedMealSlot): string {
+  const base = formatPlannedMealTime(slot.label, slot.time);
+  return slot.note === "tomorrow" ? `Tomorrow — ${base}` : base;
+}

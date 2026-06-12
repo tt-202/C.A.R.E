@@ -57,7 +57,21 @@ The caregiver app listens under `robots/{ROBOT_ID}/`:
 |----------|--------|
 | `status/live` | `state`, `bite_count`, `section`, `emergency`, `jetson_online`, `last_feed_time` |
 | `stats/feed_counts` | `total_bites`, `successful_feeds`, `failed_feeds` |
-| `status/button_input` | `eat_pressed`, `stop_pressed`, `last_pin` |
+| `status/button_input` | `eat_pressed`, `stop_pressed`, `last_pin`, `eat_press_seq` |
+
+Each **feed button** press runs one bite motion, increments `eat_press_seq`, and the care-app saves one bite to meal history.
+
+## GPIO buttons
+
+Set `BUTTONS_ENABLED=true` on the Jetson (see `.env.example`). Default BCM pins:
+
+| Button | Pin | Action |
+|--------|-----|--------|
+| Feed | 17 | One bite (motion + count) |
+| Plate | 27 | Cycle plate section 1→4 |
+| E-stop | 22 | Reset session, mark emergency |
+
+Requires `RPi.GPIO` (`pip install RPi.GPIO` on Jetson).
 
 The worker updates these automatically after each command (`robot_stats.py`).
 

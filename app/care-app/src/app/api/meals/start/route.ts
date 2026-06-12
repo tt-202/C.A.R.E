@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/authRequest";
 import { getMealScope } from "@/lib/carePair";
+import { startRobotMealSession } from "@/lib/robotLiveAdmin";
 import { prisma } from "@/lib/prisma";
 
 export async function POST(request: NextRequest) {
@@ -21,6 +22,11 @@ export async function POST(request: NextRequest) {
         plannedMealTime: body.plannedMealTime ?? null,
       },
     });
+    try {
+      await startRobotMealSession();
+    } catch (resetErr) {
+      console.warn("[meal start] robot session start failed", resetErr);
+    }
     return NextResponse.json({ mealId: meal.id });
   } catch (e) {
     if (e instanceof Error && e.message === "Unauthorized") {

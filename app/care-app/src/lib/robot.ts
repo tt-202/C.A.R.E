@@ -8,6 +8,7 @@ export type RobotCommandStatus = "pending" | "running" | "done" | "error";
 export type RobotCommandPayload = {
   sectionNum?: number;
   mealId?: string;
+  emergency?: boolean;
 };
 
 export function isRobotCommandType(value: string): value is RobotCommandType {

@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Meal" ADD COLUMN "lastFeedPressSeq" INTEGER NOT NULL DEFAULT 0;

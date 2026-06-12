@@ -23,8 +23,15 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
+from gpio_buttons import ButtonManager, ButtonPoller
 from robot_motion import execute_command
-from robot_stats import mark_jetson_online, record_failed_feed, record_successful_bite, set_live_state
+from robot_stats import (
+    after_successful_feed,
+    mark_jetson_online,
+    record_failed_feed,
+    reset_meal_session,
+    set_live_state,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("care-robot-worker")
@@ -75,6 +82,37 @@ def finish_command(
     )
 
 
+def current_section(db: firestore.Client, rid: str) -> int:
+    live = db.collection("robots").document(rid).collection("status").document("live").get()
+    data = live.to_dict() or {}
+    section = data.get("section", 1)
+    if isinstance(section, int) and 1 <= section <= 4:
+        return section
+    return 1
+
+
+def handle_gpio_feed(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
+    section = current_section(db, rid)
+    try:
+        execute_command("next_bite", {"sectionNum": section})
+        after_successful_feed(db, rid, section, pin=buttons.feed_pin)
+        logger.info("GPIO feed button → bite section=%s", section)
+    except Exception:
+        logger.exception("GPIO feed failed")
+        record_failed_feed(db, rid)
+
+
+def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
+    section = (current_section(db, rid) % 4) + 1
+    set_live_state(db, rid, state="IDLE", section=section, emergency=False)
+    logger.info("GPIO plate button → section %s", section)
+
+
+def handle_gpio_estop(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
+    reset_meal_session(db, rid, emergency=True)
+    logger.warning("GPIO e-stop pressed")
+
+
 def process_change(db: firestore.Client, col: firestore.CollectionReference, change: Any) -> None:
     if change.type not in (
         firestore.DocumentChange.Type.ADDED,
@@ -101,16 +139,18 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
             section = 1
             if isinstance(payload, dict) and isinstance(payload.get("sectionNum"), int):
                 section = payload["sectionNum"]
-            record_successful_bite(db, rid, section)
+            feed_pin = int(os.environ.get("GPIO_FEED_PIN", "17"))
+            after_successful_feed(db, rid, section, pin=feed_pin)
         elif cmd == "stop":
-            set_live_state(db, rid, state="IDLE", emergency=True)
+            emergency = isinstance(payload, dict) and payload.get("emergency") is True
+            reset_meal_session(db, rid, emergency=emergency)
         elif cmd in ("home", "pause"):
-            set_live_state(db, rid, state="IDLE", emergency=False)
+            reset_meal_session(db, rid, emergency=False)
         logger.info("done %s cmd=%s", snap.id, cmd)
     except Exception as e:
         logger.exception("command %s failed", snap.id)
         record_failed_feed(db, rid)
-        set_live_state(db, rid, state="ERROR", emergency=False)
+        reset_meal_session(db, rid, emergency=False)
         finish_command(ref, ok=False, error=str(e))
 
 
@@ -127,6 +167,10 @@ def main() -> int:
     db = firestore.client()
     rid = robot_id()
     mark_jetson_online(db, rid)
+    buttons = ButtonManager()
+    buttons.setup()
+    poller = ButtonPoller(buttons)
+    poller.start()
     col = commands_col(db)
     query = col.where(filter=FieldFilter("status", "==", "pending"))
 
@@ -134,14 +178,29 @@ def main() -> int:
         for change in changes:
             process_change(db, col, change)
 
-    logger.info("listening robot_id=%s dry_run=%s", robot_id(), os.environ.get("DRY_RUN", "true"))
+    logger.info(
+        "listening robot_id=%s dry_run=%s buttons=%s",
+        robot_id(),
+        os.environ.get("DRY_RUN", "true"),
+        buttons.enabled,
+    )
     query.on_snapshot(on_snapshot)
 
     try:
         while True:
-            time.sleep(3600)
+            if buttons.enabled:
+                if buttons.feed_pressed():
+                    handle_gpio_feed(db, rid, buttons)
+                elif buttons.plate_pressed():
+                    handle_gpio_plate(db, rid, buttons)
+                elif buttons.estop_pressed():
+                    handle_gpio_estop(db, rid, buttons)
+            time.sleep(0.05)
     except KeyboardInterrupt:
         logger.info("stopped")
+    finally:
+        poller.stop()
+        buttons.cleanup()
     return 0
 
 

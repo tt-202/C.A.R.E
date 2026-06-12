@@ -10,11 +10,15 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const { mealId } = await context.params;
     const ctx = await getAuthContext(request);
     const scope = await getMealScope(ctx.uid, { email: ctx.email, displayName: ctx.name });
-    const body = (await request.json()) as { sectionNum?: number };
+    const body = (await request.json()) as { sectionNum?: number; feedPressSeq?: number };
     const sectionNum = body.sectionNum;
     if (typeof sectionNum !== "number" || sectionNum < 1 || sectionNum > 4) {
       return NextResponse.json({ error: "Invalid section" }, { status: 400 });
     }
+    const feedPressSeq =
+      typeof body.feedPressSeq === "number" && Number.isFinite(body.feedPressSeq)
+        ? Math.trunc(body.feedPressSeq)
+        : null;
     const meal = await prisma.meal.findFirst({
       where: { id: mealId, ...mealOwnershipWhere(scope) },
     });
@@ -24,8 +28,19 @@ export async function POST(request: NextRequest, context: RouteContext) {
     if (meal.endedAt) {
       return NextResponse.json({ error: "Meal already ended" }, { status: 400 });
     }
+    if (feedPressSeq !== null && feedPressSeq <= meal.lastFeedPressSeq) {
+      return NextResponse.json({
+        bitesTotal: meal.bitesTotal,
+        section1Count: meal.section1Count,
+        section2Count: meal.section2Count,
+        section3Count: meal.section3Count,
+        section4Count: meal.section4Count,
+        duplicate: true,
+      });
+    }
     const data = {
       bitesTotal: { increment: 1 },
+      ...(feedPressSeq !== null && { lastFeedPressSeq: feedPressSeq }),
       ...(sectionNum === 1 && { section1Count: { increment: 1 } }),
       ...(sectionNum === 2 && { section2Count: { increment: 1 } }),
       ...(sectionNum === 3 && { section3Count: { increment: 1 } }),

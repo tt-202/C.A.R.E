@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/authRequest";
 import { getMealScope, mealOwnershipWhere } from "@/lib/carePair";
 import { mealToHistoryEntry } from "@/lib/mealDto";
+import { resetRobotMealSession } from "@/lib/robotLiveAdmin";
 import { prisma } from "@/lib/prisma";
 
 type RouteContext = { params: Promise<{ mealId: string }> };
@@ -11,9 +12,13 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const { mealId } = await context.params;
     const ctx = await getAuthContext(request);
     const scope = await getMealScope(ctx.uid, { email: ctx.email, displayName: ctx.name });
-    let body: { plannedMealTime?: string } = {};
+    let body: { plannedMealTime?: string; complete?: boolean; emergency?: boolean } = {};
     try {
-      body = (await request.json()) as { plannedMealTime?: string };
+      body = (await request.json()) as {
+        plannedMealTime?: string;
+        complete?: boolean;
+        emergency?: boolean;
+      };
     } catch {
       /* empty */
     }
@@ -28,8 +33,9 @@ export async function POST(request: NextRequest, context: RouteContext) {
     }
     const end = new Date();
     const durationMs = end.getTime() - meal.startedAt.getTime();
+    const forceComplete = body.complete === true;
 
-    if (meal.bitesTotal === 0 && durationMs < 3000) {
+    if (!forceComplete && meal.bitesTotal === 0 && durationMs < 3000) {
       await prisma.meal.delete({ where: { id: mealId } });
       return NextResponse.json({ cancelled: true });
     }
@@ -42,6 +48,15 @@ export async function POST(request: NextRequest, context: RouteContext) {
         plannedMealTime: body.plannedMealTime ?? meal.plannedMealTime,
       },
     });
+
+    if (forceComplete) {
+      try {
+        await resetRobotMealSession({ emergency: Boolean(body.emergency) });
+      } catch (resetErr) {
+        console.warn("[meal stop] robot session reset failed", resetErr);
+      }
+    }
+
     return NextResponse.json({ ok: true, meal: mealToHistoryEntry(updated) });
   } catch (e) {
     if (e instanceof Error && e.message === "Unauthorized") {

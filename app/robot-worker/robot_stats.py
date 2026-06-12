@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
 from firebase_admin import firestore
@@ -12,12 +11,22 @@ def _robot_root(db: firestore.Client, robot_id: str) -> firestore.DocumentRefere
     return db.collection("robots").document(robot_id)
 
 
+def _live_ref(db: firestore.Client, robot_id: str) -> firestore.DocumentReference:
+    return _robot_root(db, robot_id).collection("status").document("live")
+
+
+def _button_input_ref(db: firestore.Client, robot_id: str) -> firestore.DocumentReference:
+    return _robot_root(db, robot_id).collection("status").document("button_input")
+
+
 def mark_jetson_online(db: firestore.Client, robot_id: str) -> None:
-    _robot_root(db, robot_id).collection("status").document("live").set(
+    _live_ref(db, robot_id).set(
         {
             "state": "IDLE",
             "jetson_online": True,
             "emergency": False,
+            "bite_count": 0,
+            "section": 1,
             "updatedAt": firestore.SERVER_TIMESTAMP,
         },
         merge=True,
@@ -45,24 +54,73 @@ def set_live_state(
         payload["section"] = section
     if state == "FEEDING":
         payload["last_feed_time"] = firestore.SERVER_TIMESTAMP
-    _robot_root(db, robot_id).collection("status").document("live").set(payload, merge=True)
+    _live_ref(db, robot_id).set(payload, merge=True)
+
+
+def reset_meal_session(db: firestore.Client, robot_id: str, *, emergency: bool = False) -> None:
+    set_live_state(
+        db,
+        robot_id,
+        state="IDLE",
+        bite_count=0,
+        section=1,
+        emergency=emergency,
+    )
+    publish_button_input(
+        db,
+        robot_id,
+        eat_pressed=False,
+        stop_pressed=emergency,
+    )
+
+
+def record_feed_button_press(db: firestore.Client, robot_id: str, *, pin: int) -> int:
+    """Increment eat_press_seq so the care-app can sync one DB bite per button press."""
+    ref = _button_input_ref(db, robot_id)
+    snap = ref.get()
+    seq = int((snap.to_dict() or {}).get("eat_press_seq") or 0) + 1
+    ref.set(
+        {
+            "eat_pressed": True,
+            "eat_press_seq": seq,
+            "last_pin": pin,
+            "updatedAt": firestore.SERVER_TIMESTAMP,
+        },
+        merge=True,
+    )
+    return seq
+
+
+def after_successful_feed(
+    db: firestore.Client,
+    robot_id: str,
+    section_num: int,
+    *,
+    pin: int | None = None,
+) -> None:
+    record_successful_bite(db, robot_id, section_num)
+    if pin is not None:
+        record_feed_button_press(db, robot_id, pin=pin)
 
 
 def record_successful_bite(db: firestore.Client, robot_id: str, section_num: int = 1) -> None:
     feed_ref = _robot_root(db, robot_id).collection("stats").document("feed_counts")
     snap = feed_ref.get()
     data = snap.to_dict() if snap.exists else {}
-    total = int(data.get("total_bites") or data.get("eat_press_count") or 0) + 1
+    lifetime_total = int(data.get("total_bites") or data.get("eat_press_count") or 0) + 1
     successful = int(data.get("successful_feeds") or 0) + 1
     attempts = int(data.get("total_feed_attempts") or successful)
 
+    live_data = _live_ref(db, robot_id).get().to_dict() or {}
+    session_bites = int(live_data.get("bite_count") or 0) + 1
+
     feed_ref.set(
         {
-            "total_bites": total,
+            "total_bites": lifetime_total,
             "successful_feeds": successful,
             "failed_feeds": int(data.get("failed_feeds") or 0),
             "total_feed_attempts": max(attempts, successful),
-            "eat_press_count": total,
+            "eat_press_count": lifetime_total,
             "updatedAt": firestore.SERVER_TIMESTAMP,
         },
         merge=True,
@@ -71,7 +129,7 @@ def record_successful_bite(db: firestore.Client, robot_id: str, section_num: int
         db,
         robot_id,
         state="FEEDING",
-        bite_count=total,
+        bite_count=session_bites,
         section=section_num,
         emergency=False,
     )
@@ -108,4 +166,4 @@ def publish_button_input(
         payload["stop_pressed"] = stop_pressed
     if last_pin is not None:
         payload["last_pin"] = last_pin
-    _robot_root(db, robot_id).collection("status").document("button_input").set(payload, merge=True)
+    _button_input_ref(db, robot_id).set(payload, merge=True)

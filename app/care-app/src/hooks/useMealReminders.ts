@@ -63,8 +63,8 @@ function dispatchReminder(
   onReminder?: (payload: MealReminderPayload) => void,
 ) {
   const name = careRecipientName || "your loved one";
-  const title = `C.A.R.E — ${slotLabel} in ${REMINDER_LEAD_MINUTES} min`;
-  const body = `${name}'s ${slotLabel.toLowerCase()} is at ${time}. Get ready — ${REMINDER_LEAD_MINUTES} minutes to go.`;
+  const title = `${name} — ${slotLabel} soon`;
+  const body = `Meal time is ${time}. Please get ${name} ready.`;
 
   onReminder?.({ slotKey, title, body });
   showBrowserNotification(title, body, fireKey);

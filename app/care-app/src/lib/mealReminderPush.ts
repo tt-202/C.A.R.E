@@ -1,7 +1,7 @@
 import { MEAL_SLOTS, normalizeMealSchedule, type MealSchedule } from "@/lib/mealSchedule";
 
 /** Notify this many minutes before the scheduled meal time. */
-export const REMINDER_LEAD_MINUTES = 15;
+export const REMINDER_LEAD_MINUTES = 60;
 /** Matches Vercel cron interval (1 min) with a small buffer. */
 export const REMINDER_WINDOW_MINUTES = 6;
 
@@ -25,13 +25,13 @@ export function buildMealReminderPush(
 ): { title: string; body: string; tag: string } {
   const name = careRecipientName || "your loved one";
   return {
-    title: `C.A.R.E — ${slotLabel} in ${REMINDER_LEAD_MINUTES} min`,
-    body: `${name}'s ${slotLabel.toLowerCase()} is at ${time}. Get ready — ${REMINDER_LEAD_MINUTES} minutes to go.`,
+    title: `${name} — ${slotLabel} soon`,
+    body: `Meal time is ${time}. Please get ${name} ready.`,
     tag: `meal-early-${slotLabel.toLowerCase()}`,
   };
 }
 
-/** Slots that should fire a 15-minute-early push right now (server local clock). */
+/** Slots that should fire a reminder REMINDER_LEAD_MINUTES before meal time (server local clock). */
 export function dueMealReminderSlots(
   schedule: MealSchedule,
   now = new Date(),

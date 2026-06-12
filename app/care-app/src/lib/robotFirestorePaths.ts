@@ -22,6 +22,8 @@ export type RobotButtonInput = {
   eat_pressed?: boolean;
   stop_pressed?: boolean;
   last_pin?: number;
+  /** Monotonic counter — one increment per physical feed button press. */
+  eat_press_seq?: number;
 };
 
 export function robotLiveStatusPath(robotId: string) {

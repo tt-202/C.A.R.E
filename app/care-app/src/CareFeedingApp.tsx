@@ -22,11 +22,15 @@ import {
 import { isRobotControlEnabled, sendRobotCommand } from "@/lib/robotClient";
 import type { RobotCommandPayload, RobotCommandType } from "@/lib/robot";
 import {
-  activeMealSlot,
+  formatPlannedMealDisplay,
   formatPlannedMealTime,
   MEAL_SLOTS,
+  nextMealSlotAfter,
   normalizeMealSchedule,
+  parsePlannedMealLabel,
+  upcomingMealSlot,
   type MealSchedule,
+  type PlannedMealSlot,
 } from "@/lib/mealSchedule";
 import { formatProfileSaveError, createUserInvite, saveMealSchedule } from "@/lib/saveCareProfile";
 import { notifyCaregiverMealFinished } from "@/lib/notifyCaregiver";
@@ -44,6 +48,7 @@ import {
   minutesUntilNextReminder,
   scheduleLocalMealReminders,
 } from "@/lib/scheduleLocalMealReminders";
+import { REMINDER_LEAD_MINUTES } from "@/lib/mealReminderPush";
 import { type Timestamp } from "firebase/firestore";
 import { isFirebaseConfigured } from "@/lib/firebaseClient";
 import { useRobotFirestore } from "@/hooks/useRobotFirestore";
@@ -86,8 +91,6 @@ const roleLabels: Record<UserRole, string> = {
   user: "User",
 };
 
-const AUTO_BITE_INTERVAL_MS = 30_000;
-
 export default function CareFeedingApp({
   role,
   careRecipientName,
@@ -122,24 +125,29 @@ export default function CareFeedingApp({
   const [apiError, setApiError] = useState<string | null>(null);
   const [doneMessage, setDoneMessage] = useState<string | null>(null);
   const [startBusy, setStartBusy] = useState(false);
+  const [nextPlannedMeal, setNextPlannedMeal] = useState(() =>
+    formatPlannedMealDisplay(upcomingMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule))),
+  );
   const robotId = getPublicRobotId();
   const { live: robotLive, feedCounts: robotFeedCounts, buttonInput: robotButtons, error: robotListenError } =
     useRobotFirestore({
       robotId,
-      enabled: !previewMode && !isUser && isFirebaseConfigured(),
+      enabled: !previewMode && isFirebaseConfigured(),
     });
 
   const mealStartedAtRef = useRef<number | null>(null);
   const plannedMealTimeRef = useRef(
     formatPlannedMealTime(
-      activeMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule)).label,
-      activeMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule)).time,
+      upcomingMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule)).label,
+      upcomingMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule)).time,
     ),
   );
   const mealScheduleRef = useRef(mealSchedule);
   const mealIdRef = useRef<string | null>(null);
   const getIdTokenRef = useRef(getIdToken);
   const biteInFlight = useRef(false);
+  const lastEatPressSeqRef = useRef(0);
+  const feedPressHandling = useRef(false);
 
   const queueRobot = useCallback(
     async (cmd: RobotCommandType, payload?: RobotCommandPayload) => {
@@ -161,9 +169,22 @@ export default function CareFeedingApp({
   }, [initialMealSchedule]);
 
   useEffect(() => {
-    const slot = activeMealSlot(new Date(), mealScheduleRef.current);
+    if (sessionActive) return;
+    const slot = upcomingMealSlot(new Date(), mealScheduleRef.current);
     plannedMealTimeRef.current = formatPlannedMealTime(slot.label, slot.time);
-  }, [mealSchedule]);
+    setNextPlannedMeal(formatPlannedMealDisplay(slot));
+  }, [mealSchedule, sessionActive]);
+
+  const applyPlannedMealSlot = useCallback((slot: PlannedMealSlot) => {
+    plannedMealTimeRef.current = formatPlannedMealTime(slot.label, slot.time);
+    setNextPlannedMeal(formatPlannedMealDisplay(slot));
+  }, []);
+
+  const refreshMealReminders = useCallback(async () => {
+    if (previewMode || isUser) return;
+    const normalized = normalizeMealSchedule(mealScheduleRef.current);
+    await scheduleLocalMealReminders(normalized, careRecipientName ?? "User");
+  }, [previewMode, isUser, careRecipientName]);
 
   const handleInAppAlert = useCallback((payload: { body: string }) => {
     setActiveReminder(payload.body);
@@ -261,7 +282,7 @@ export default function CareFeedingApp({
 
     const local = await scheduleLocalMealReminders(normalized, careRecipientName ?? "User");
     if (local.scheduled > 0) {
-      pushDetail += ` ${local.scheduled} reminder(s) scheduled on this device (15 min before meals, even if the tab is closed).`;
+      pushDetail += ` ${local.scheduled} reminder(s) scheduled on this device (${REMINDER_LEAD_MINUTES} min before meals, even if the tab is closed).`;
     } else if (local.supported) {
       pushDetail += " No more reminders today; tomorrow's will schedule when you open the app.";
     } else if (isFcmConfigured()) {
@@ -342,52 +363,54 @@ export default function CareFeedingApp({
       if (!sessionActive) return "Press Done when you finish your meal.";
       return "Meal in progress — press Done when finished.";
     }
-    if (!sessionActive) return "Not started. Press Start to begin.";
-    return "Counting bites automatically…";
+    if (!sessionActive) return "Press Start, then use the feed button for each bite.";
+    return "Press the feed button on the robot for each bite.";
   }, [isUser, sessionActive]);
 
-  const recordBite = useCallback(async () => {
-    const prev = bitesCompleted;
-    const next = prev + 1;
-    setBitesCompleted(next);
+  const recordFeedPress = useCallback(
+    async (feedPressSeq: number) => {
+      const prev = bitesCompleted;
+      const next = prev + 1;
+      setBitesCompleted(next);
 
-    if (previewMode) return;
+      if (previewMode) return;
 
-    if (biteInFlight.current) return;
-    biteInFlight.current = true;
-    const mid = mealIdRef.current;
-    if (!mid) {
-      setBitesCompleted(prev);
-      biteInFlight.current = false;
-      return;
-    }
-    try {
-      const token = await getIdTokenRef.current();
-      const res = await fetch(`/api/meals/${mid}/bite`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ sectionNum: 1 }),
-      });
-      if (!res.ok) throw new Error("bite failed");
-      const data = (await res.json()) as { bitesTotal: number };
-      setBitesCompleted(data.bitesTotal);
-      void queueRobot("next_bite", { sectionNum: 1, mealId: mid });
-    } catch {
-      setBitesCompleted(prev);
-      setApiError("Could not save a bite. Check your connection.");
-    } finally {
-      biteInFlight.current = false;
-    }
-  }, [previewMode, queueRobot, bitesCompleted]);
+      if (biteInFlight.current) return;
+      biteInFlight.current = true;
+      const mid = mealIdRef.current;
+      if (!mid) {
+        setBitesCompleted(prev);
+        biteInFlight.current = false;
+        return;
+      }
+      try {
+        const token = await getIdTokenRef.current();
+        const res = await fetch(`/api/meals/${mid}/bite`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ sectionNum: 1, feedPressSeq }),
+        });
+        if (!res.ok) throw new Error("bite failed");
+        const data = (await res.json()) as { bitesTotal: number };
+        setBitesCompleted(data.bitesTotal);
+      } catch {
+        setBitesCompleted(prev);
+        setApiError("Could not save a bite. Check your connection.");
+      } finally {
+        biteInFlight.current = false;
+      }
+    },
+    [previewMode, bitesCompleted],
+  );
 
-  const startSession = async () => {
+  const startSession = useCallback(async () => {
     setApiError(null);
     if (mealStartedAtRef.current === null) {
-      const slot = activeMealSlot(new Date(), mealScheduleRef.current);
-      plannedMealTimeRef.current = formatPlannedMealTime(slot.label, slot.time);
+      const slot = upcomingMealSlot(new Date(), mealScheduleRef.current);
+      applyPlannedMealSlot(slot);
       if (previewMode) {
         mealStartedAtRef.current = Date.now();
         setBitesCompleted(0);
@@ -417,50 +440,72 @@ export default function CareFeedingApp({
       }
     }
     setSessionActive(true);
-  };
+  }, [previewMode, applyPlannedMealSlot]);
+
+  const resetPlannedMealSlot = useCallback(
+    (justCompletedPlanned?: string) => {
+      const completedLabel = parsePlannedMealLabel(
+        justCompletedPlanned ?? plannedMealTimeRef.current,
+      );
+      applyPlannedMealSlot(nextMealSlotAfter(completedLabel, mealScheduleRef.current));
+    },
+    [applyPlannedMealSlot],
+  );
 
   const notifyCaregiverIfUserFinished = useCallback(
     async (bitesTotal: number, plannedMealTime: string) => {
       if (!isUser || previewMode) return;
-      setDoneMessage(null);
       const result = await notifyCaregiverMealFinished(getIdTokenRef.current, {
         careRecipientName: careRecipientName ?? "User",
         caregiverName: caregiverName ?? "Caregiver",
         bitesTotal,
         plannedMealTime,
       });
-      if (result.ok) {
-        setDoneMessage(
-          `${caregiverName ?? "Caregiver"} notified. Open the Caregiver screen on their device (or another tab) with notifications allowed.`,
-        );
-      } else {
+      if (!result.ok) {
         setApiError(`Could not notify caregiver: ${result.error}`);
       }
     },
     [isUser, previewMode, careRecipientName, caregiverName],
   );
 
-  const finishMealOnServer = async () => {
+  const ensureMealSessionForEnd = useCallback(async () => {
+    if (previewMode) {
+      if (mealStartedAtRef.current === null) {
+        const slot = upcomingMealSlot(new Date(), mealScheduleRef.current);
+        applyPlannedMealSlot(slot);
+        mealStartedAtRef.current = Date.now();
+        setBitesCompleted(0);
+      }
+      setSessionActive(true);
+      return;
+    }
+    if (!mealIdRef.current) {
+      await startSession();
+    }
+  }, [previewMode, startSession, applyPlannedMealSlot]);
+
+  const finishMealOnServer = async (opts: { complete: boolean; emergency: boolean }) => {
     setApiError(null);
     setDoneMessage(null);
-    setSessionActive(false);
     const bitesTotal = bitesCompleted;
     const plannedMealTime = plannedMealTimeRef.current;
 
     if (previewMode) {
       finalizeMealLocal();
+      resetPlannedMealSlot(plannedMealTime);
       return;
     }
 
     const mid = mealIdRef.current;
-    mealIdRef.current = null;
-    mealStartedAtRef.current = null;
-    setBitesCompleted(0);
-
     if (!mid) {
+      setSessionActive(false);
+      setBitesCompleted(0);
+      mealStartedAtRef.current = null;
+      resetPlannedMealSlot(plannedMealTime);
       await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime);
       return;
     }
+
     try {
       const token = await getIdTokenRef.current();
       const res = await fetch(`/api/meals/${mid}/stop`, {
@@ -469,44 +514,92 @@ export default function CareFeedingApp({
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ plannedMealTime }),
+        body: JSON.stringify({
+          plannedMealTime,
+          complete: opts.complete,
+          emergency: opts.emergency,
+        }),
       });
-      if (!res.ok) throw new Error("stop failed");
-      await loadHistory();
+      const data = (await res.json()) as {
+        meal?: MealHistoryEntry;
+        cancelled?: boolean;
+        error?: string;
+      };
+      if (!res.ok && !data.cancelled) throw new Error("stop failed");
+
+      mealIdRef.current = null;
+      mealStartedAtRef.current = null;
+      setBitesCompleted(0);
+      setSessionActive(false);
+      resetPlannedMealSlot(plannedMealTime);
+      void refreshMealReminders();
+
+      if (data.meal) {
+        setMealHistory((prev) => [data.meal!, ...prev.filter((e) => e.id !== data.meal!.id)]);
+        const endedLabel = new Date(data.meal.endedAt).toLocaleString(undefined, {
+          dateStyle: "medium",
+          timeStyle: "short",
+        });
+        const nextLabel = formatPlannedMealDisplay(
+          nextMealSlotAfter(parsePlannedMealLabel(plannedMealTime), mealScheduleRef.current),
+        );
+        setDoneMessage(
+          isUser
+            ? `Meal saved at ${endedLabel}. Next: ${nextLabel}.`
+            : `Meal saved for ${careRecipientName ?? "user"} at ${endedLabel}. Next: ${nextLabel}.`,
+        );
+      } else {
+        await loadHistory();
+      }
+
       await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime);
     } catch {
       setApiError("Could not save this meal. Your next sync may show partial data.");
+      mealIdRef.current = null;
+      mealStartedAtRef.current = null;
+      setBitesCompleted(0);
+      setSessionActive(false);
+      resetPlannedMealSlot(plannedMealTime);
+      void refreshMealReminders();
       await loadHistory();
       await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime);
     }
   };
 
+  const endMeal = async (emergency: boolean) => {
+    await ensureMealSessionForEnd();
+    void queueRobot("stop", { emergency });
+    await finishMealOnServer({ complete: true, emergency });
+  };
+
   const emergencyStop = async () => {
-    if (!isUser && mealStartedAtRef.current !== null) {
-      await recordBite();
-    }
-    if (isUser && mealStartedAtRef.current === null) {
-      await startSession();
-    }
-    void queueRobot("stop");
-    await finishMealOnServer();
+    await endMeal(true);
   };
 
   const doneMeal = async () => {
-    if (isUser && mealStartedAtRef.current === null) {
-      await startSession();
-    }
-    void queueRobot("stop");
-    await finishMealOnServer();
+    await endMeal(false);
   };
 
   useEffect(() => {
-    if (isUser || !sessionActive) return;
-    const id = window.setInterval(() => {
-      void recordBite();
-    }, AUTO_BITE_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [sessionActive, recordBite, isUser]);
+    if (previewMode) return;
+    const seq = robotButtons?.eat_press_seq;
+    if (typeof seq !== "number" || seq <= lastEatPressSeqRef.current) return;
+    if (feedPressHandling.current) return;
+
+    feedPressHandling.current = true;
+    lastEatPressSeqRef.current = seq;
+
+    void (async () => {
+      try {
+        if (!sessionActive) {
+          await startSession();
+        }
+        await recordFeedPress(seq);
+      } finally {
+        feedPressHandling.current = false;
+      }
+    })();
+  }, [previewMode, robotButtons?.eat_press_seq, sessionActive, startSession, recordFeedPress]);
 
   const clearHistory = async () => {
     if (!userEmail) return;
@@ -608,7 +701,7 @@ export default function CareFeedingApp({
           <p className={`text-lg text-amber-100/95 ${welcomeName ? "mt-1" : "mt-2"}`}>
             {isUser
               ? "Press Done when you finish your meal."
-              : "Set meal reminder times and track bites."}
+              : "Start a meal, then each feed-button press counts as one bite."}
           </p>
           {previewMode ? (
             <p className="mt-3 rounded-2xl border border-amber-300/40 bg-blue-950/50 px-4 py-2 text-base font-semibold text-amber-100">
@@ -637,7 +730,11 @@ export default function CareFeedingApp({
                 </dd>
                 <dt className="font-semibold text-stone-700">Robot state</dt>
                 <dd className="font-bold text-stone-950">{robotLive?.state ?? "—"}</dd>
-                <dt className="font-semibold text-stone-700">Bites completed</dt>
+                <dt className="font-semibold text-stone-700">This meal bites</dt>
+                <dd className="font-bold text-stone-950">
+                  {typeof robotLive?.bite_count === "number" ? robotLive.bite_count : 0}
+                </dd>
+                <dt className="font-semibold text-stone-700">Lifetime feeds</dt>
                 <dd className="font-bold text-stone-950">{feedCountTotal(robotFeedCounts)}</dd>
                 <dt className="font-semibold text-stone-700">Current section</dt>
                 <dd className="font-bold text-stone-950">
@@ -651,6 +748,10 @@ export default function CareFeedingApp({
                 <dd className="font-bold text-stone-950">{robotFeedCounts?.successful_feeds ?? "—"}</dd>
                 <dt className="font-semibold text-stone-700">Failed feeds</dt>
                 <dd className="font-bold text-stone-950">{robotFeedCounts?.failed_feeds ?? "—"}</dd>
+                <dt className="font-semibold text-stone-700">Feed button presses</dt>
+                <dd className="font-bold text-stone-950">
+                  {typeof robotButtons?.eat_press_seq === "number" ? robotButtons.eat_press_seq : "—"}
+                </dd>
                 <dt className="font-semibold text-stone-700">Eat pressed</dt>
                 <dd className="font-bold text-stone-950">
                   {robotButtons?.eat_pressed ? "Yes" : robotButtons ? "No" : "—"}
@@ -771,6 +872,16 @@ export default function CareFeedingApp({
                 Meal reminders
               </h2>
 
+              <div className="rounded-2xl border-2 border-amber-500/60 bg-[#f5ebe0] p-4 text-center shadow-md">
+                <p className="text-sm font-bold text-stone-700">
+                  {sessionActive ? "Current meal on schedule" : "Next meal on schedule"}
+                </p>
+                <p className="mt-1 text-2xl font-black text-stone-950">{nextPlannedMeal}</p>
+                <p className="mt-2 text-sm font-medium text-stone-700">
+                  After Done or Emergency stop, the schedule moves to the next meal.
+                </p>
+              </div>
+
               <div className="space-y-3">
                 {MEAL_SLOTS.map((slot) => (
                   <div
@@ -831,96 +942,110 @@ export default function CareFeedingApp({
                 </Button>
                 <Button
                   type="button"
-                  className="h-16 rounded-2xl border-2 border-red-900 bg-red-800 text-lg font-bold text-white hover:bg-red-900"
+                  className="h-16 rounded-2xl border-2 border-blue-950 bg-blue-900 text-lg font-semibold text-white hover:bg-blue-950"
+                  onClick={() => void doneMeal()}
+                >
+                  <Square className="mr-2 h-6 w-6" />
+                  Done
+                </Button>
+                <Button
+                  type="button"
+                  className="col-span-full h-16 rounded-2xl border-2 border-red-900 bg-red-800 text-lg font-bold text-white hover:bg-red-900"
                   onClick={() => void emergencyStop()}
                 >
                   <AlertTriangle className="mr-2 h-6 w-6" />
                   Emergency stop
                 </Button>
               </div>
-            </section>
-
-            <section aria-labelledby="history-heading" className="space-y-4">
-              <h2 id="history-heading" className="flex items-center justify-center gap-2 text-2xl font-bold text-amber-100">
-                <History className="h-7 w-7" aria-hidden />
-                User meal history
-              </h2>
-              <p className="text-center text-base text-amber-100/90">
-                {previewMode ? "Saved on this device for " : "Saved in your account for "}
-                <strong className="text-white">{careRecipientName ?? userEmail ?? "this account"}</strong>.
-              </p>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <div className="rounded-2xl border-2 border-stone-600 bg-[#f5ebe0] p-4 text-center shadow-md">
-                  <p className="text-sm font-bold text-stone-700">Meals recorded</p>
-                  <p className="mt-1 text-3xl font-black tabular-nums text-stone-950">{totalMeals}</p>
-                </div>
-                <div className="rounded-2xl border-2 border-stone-600 bg-[#f5ebe0] p-4 text-center shadow-md">
-                  <p className="text-sm font-bold text-stone-700">Total bites (history)</p>
-                  <p className="mt-1 text-3xl font-black tabular-nums text-stone-950">{totalBitesRecorded}</p>
-                </div>
-                <div className="rounded-2xl border-2 border-stone-600 bg-[#f5ebe0] p-4 text-center shadow-md sm:col-span-1">
-                  <p className="text-sm font-bold text-stone-700">Latest meal length</p>
-                  <p className="mt-1 text-xl font-bold leading-tight text-stone-950">
-                    {mealHistory[0] ? formatDuration(mealHistory[0].durationMs) : "—"}
-                  </p>
-                </div>
-              </div>
-
-              <Card className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] shadow-lg">
-                <CardContent className="space-y-4 p-5 md:p-6">
-                  <div className="flex flex-col items-center justify-between gap-3 sm:flex-row">
-                    <p className="text-lg font-bold text-stone-950">Past meals (newest first)</p>
-                    {mealHistory.length > 0 ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="rounded-2xl border-2 border-stone-600 bg-stone-200 text-stone-900 hover:bg-stone-100"
-                        onClick={() => void clearHistory()}
-                      >
-                        Clear history
-                      </Button>
-                    ) : null}
-                  </div>
-
-                  {mealHistory.length === 0 ? (
-                    <p className="text-center text-lg font-medium text-stone-700">
-                      No finished meals yet. Press Start to count bites automatically, then use Emergency stop to end the meal.
-                    </p>
-                  ) : (
-                    <ul className="max-h-[28rem] space-y-4 overflow-y-auto pr-1">
-                      {mealHistory.map((entry) => (
-                        <li
-                          key={entry.id}
-                          className="rounded-2xl border-2 border-stone-500 bg-[#fffefb] p-4 text-stone-900 shadow-sm"
-                        >
-                          <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-stone-200 pb-2">
-                            <span className="text-base font-bold">
-                              {new Date(entry.endedAt).toLocaleString(undefined, {
-                                dateStyle: "medium",
-                                timeStyle: "short",
-                              })}
-                            </span>
-                            <span className="text-lg font-black text-blue-900">
-                              {formatDuration(entry.durationMs)}
-                            </span>
-                          </div>
-                          <p className="mt-2 text-base font-semibold text-stone-700">
-                            Planned time: {entry.plannedMealTime ?? "—"} · Bites:{" "}
-                            <span className="text-stone-950">{entry.bitesTotal}</span>
-                          </p>
-                          {entry.bitesTotal === 0 ? (
-                            <p className="mt-2 text-sm text-stone-600">No bites recorded for this meal.</p>
-                          ) : null}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </CardContent>
-              </Card>
+              {doneMessage ? (
+                <p className="text-center text-base font-medium text-amber-100" role="status">
+                  {doneMessage}
+                </p>
+              ) : null}
             </section>
           </>
         )}
+
+        {!previewMode ? (
+          <section aria-labelledby="history-heading" className="space-y-4">
+            <h2 id="history-heading" className="flex items-center justify-center gap-2 text-2xl font-bold text-amber-100">
+              <History className="h-7 w-7" aria-hidden />
+              {isUser ? "My meal history" : "User meal history"}
+            </h2>
+            <p className="text-center text-base text-amber-100/90">
+              Meals saved when someone taps <strong className="text-white">Done</strong> or{" "}
+              <strong className="text-white">Emergency stop</strong>. Bites come from each{" "}
+              <strong className="text-white">feed button</strong> press on the robot.
+            </p>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border-2 border-stone-600 bg-[#f5ebe0] p-4 text-center shadow-md">
+                <p className="text-sm font-bold text-stone-700">Meals recorded</p>
+                <p className="mt-1 text-3xl font-black tabular-nums text-stone-950">{totalMeals}</p>
+              </div>
+              <div className="rounded-2xl border-2 border-stone-600 bg-[#f5ebe0] p-4 text-center shadow-md">
+                <p className="text-sm font-bold text-stone-700">Total bites (history)</p>
+                <p className="mt-1 text-3xl font-black tabular-nums text-stone-950">{totalBitesRecorded}</p>
+              </div>
+              <div className="rounded-2xl border-2 border-stone-600 bg-[#f5ebe0] p-4 text-center shadow-md sm:col-span-1">
+                <p className="text-sm font-bold text-stone-700">Latest meal length</p>
+                <p className="mt-1 text-xl font-bold leading-tight text-stone-950">
+                  {mealHistory[0] ? formatDuration(mealHistory[0].durationMs) : "—"}
+                </p>
+              </div>
+            </div>
+
+            <Card className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] shadow-lg">
+              <CardContent className="space-y-4 p-5 md:p-6">
+                <div className="flex flex-col items-center justify-between gap-3 sm:flex-row">
+                  <p className="text-lg font-bold text-stone-950">Past meals (newest first)</p>
+                  {!isUser && mealHistory.length > 0 ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="rounded-2xl border-2 border-stone-600 bg-stone-200 text-stone-900 hover:bg-stone-100"
+                      onClick={() => void clearHistory()}
+                    >
+                      Clear history
+                    </Button>
+                  ) : null}
+                </div>
+
+                {mealHistory.length === 0 ? (
+                  <p className="text-center text-lg font-medium text-stone-700">
+                    No finished meals yet. Tap Done or Emergency stop when the meal is finished.
+                  </p>
+                ) : (
+                  <ul className="max-h-[28rem] space-y-4 overflow-y-auto pr-1">
+                    {mealHistory.map((entry) => (
+                      <li
+                        key={entry.id}
+                        className="rounded-2xl border-2 border-stone-500 bg-[#fffefb] p-4 text-stone-900 shadow-sm"
+                      >
+                        <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-stone-200 pb-2">
+                          <span className="text-base font-bold">
+                            Finished{" "}
+                            {new Date(entry.endedAt).toLocaleString(undefined, {
+                              dateStyle: "medium",
+                              timeStyle: "short",
+                            })}
+                          </span>
+                          <span className="text-lg font-black text-blue-900">
+                            {formatDuration(entry.durationMs)}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-base font-semibold text-stone-700">
+                          Planned: {entry.plannedMealTime ?? "—"} · Bites:{" "}
+                          <span className="text-stone-950">{entry.bitesTotal}</span>
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+          </section>
+        ) : null}
 
         {onSignOut ? (
           <div className="border-t border-amber-200/30 pt-6 text-center">
