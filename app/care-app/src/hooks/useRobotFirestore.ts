@@ -17,20 +17,23 @@ type Options = {
   enabled: boolean;
 };
 
+const empty = {
+  live: null,
+  feedCounts: null,
+  buttonInput: null,
+  error: null,
+} as const;
+
 export function useRobotFirestore({ robotId, enabled }: Options) {
   const [live, setLive] = useState<RobotLiveStatus | null>(null);
   const [feedCounts, setFeedCounts] = useState<RobotFeedCounts | null>(null);
   const [buttonInput, setButtonInput] = useState<RobotButtonInput | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const listening = enabled && Boolean(robotId) && isFirebaseConfigured();
+
   useEffect(() => {
-    if (!enabled || !robotId || !isFirebaseConfigured()) {
-      setLive(null);
-      setFeedCounts(null);
-      setButtonInput(null);
-      setError(null);
-      return;
-    }
+    if (!listening) return;
 
     const db = getClientDb();
     const refs = [
@@ -63,7 +66,11 @@ export function useRobotFirestore({ robotId, enabled }: Options) {
     return () => {
       for (const unsub of unsubs) unsub();
     };
-  }, [enabled, robotId]);
+  }, [listening, robotId]);
+
+  if (!listening) {
+    return empty;
+  }
 
   return { live, feedCounts, buttonInput, error };
 }
