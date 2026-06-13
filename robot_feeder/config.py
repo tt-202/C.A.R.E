@@ -40,6 +40,9 @@ def _env_bool(key: str, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class Settings:
     robot_id: str
+    arm_backend: str
+    arm_server_host: str
+    arm_server_port: int
     mycobot_port: str
     mycobot_baud: int
     dry_run: bool
@@ -60,6 +63,9 @@ def load_settings() -> Settings:
     _load_dotenv()
     return Settings(
         robot_id=os.environ.get("ROBOT_ID", "care-01").strip() or "care-01",
+        arm_backend=os.environ.get("ARM_BACKEND", "serial").strip() or "serial",
+        arm_server_host=os.environ.get("ARM_SERVER_HOST", "192.168.50.2").strip(),
+        arm_server_port=int(os.environ.get("ARM_SERVER_PORT", "5001")),
         mycobot_port=os.environ.get("MYCOBOT_PORT", "/dev/ttyAMA0"),
         mycobot_baud=int(os.environ.get("MYCOBOT_BAUD", "115200")),
         dry_run=_env_bool("DRY_RUN", default=True),

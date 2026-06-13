@@ -7,7 +7,7 @@ import threading
 
 from config import load_settings
 from states.state_machine import FeederStateMachine
-from robot.mycobot_controller import MyCobotController
+from robot.mycobot_controller import create_robot_controller
 from perception.camera import Camera
 from perception.yolo_detector import YoloDetector
 from perception.mediapipe_face import FaceTracker
@@ -21,6 +21,18 @@ from utils.logger import setup_logging
 def main() -> None:
     setup_logging()
     settings = load_settings()
+    import logging
+
+    log = logging.getLogger("robot_feeder")
+    if settings.arm_backend in ("pi_socket", "socket", "pi"):
+        log.info(
+            "Arm backend=pi_socket target=%s:%s dry_run=%s",
+            settings.arm_server_host,
+            settings.arm_server_port,
+            settings.dry_run,
+        )
+    else:
+        log.info("Arm backend=serial port=%s dry_run=%s", settings.mycobot_port, settings.dry_run)
 
     display = None
     machine_holder: list[FeederStateMachine] = []
@@ -42,11 +54,7 @@ def main() -> None:
             family=settings.apriltag_family,
         )
 
-    robot = MyCobotController(
-        port=settings.mycobot_port,
-        baud=settings.mycobot_baud,
-        dry_run=settings.dry_run,
-    )
+    robot = create_robot_controller(settings)
     camera = Camera(device_id=settings.camera_device_id)
     yolo = YoloDetector(model_path=settings.yolo_model_path)
     face = FaceTracker()
@@ -104,6 +112,8 @@ def main() -> None:
             display.stop()
         robot.stop()
         robot.go_home()
+        if hasattr(robot, "close"):
+            robot.close()
 
 
 if __name__ == "__main__":

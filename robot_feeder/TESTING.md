@@ -23,6 +23,7 @@ cp .env.example .env
 | 4 | `python scripts/test_tof.py` | Distance mm + safety range (mock or real sensor) |
 | 5 | `python scripts/test_face_live.py` | Face detected, mouth open, offset |
 | 6 | `python scripts/test_arm_motion.py` | Plate → scoop → user → home (logs if `DRY_RUN=true`) |
+| 6b | `python scripts/test_arm_socket.py` | Pi arm server PING (+ optional HOME) when `ARM_BACKEND=pi_socket` |
 | 7 | `BUTTONS_ENABLED=true python scripts/test_gpio.py` | Feed / plate / e-stop prints |
 | 8 | `python scripts/test_firebase_command.py` | Firestore commands from care-app |
 | 9 | `python scripts/test_states_interactive.py` | Full state machine; type `feed` / `stop` |
@@ -81,6 +82,36 @@ The window updates automatically:
 Optional images: copy PNGs to `robot_feeder/gui/images/` or `jetson_controller/gui/images/`.
 
 You do **not** need to run `jetson_controller/gui/lcd_display.py` anymore for live status.
+
+---
+
+## myCobot 320 Pi (arm serial on built-in Pi, vision on Jetson)
+
+When the arm only talks to the **Pi inside the myCobot 320 Pi**, use TCP from Jetson to the Pi server.
+
+**On the Pi** (SSH into the cobot’s Raspberry Pi):
+
+```bash
+pip install pymycobot
+python3 pi_arm_server_xz_delta.py   # listens on 0.0.0.0:5001
+```
+
+**On the Jetson** `robot_feeder/.env`:
+
+```env
+ARM_BACKEND=pi_socket
+ARM_SERVER_HOST=192.168.50.2   # Pi IP on your LAN — ping from Jetson
+ARM_SERVER_PORT=5001
+DRY_RUN=true                   # then false when ready
+```
+
+```bash
+python scripts/test_arm_socket.py
+DRY_RUN=false python scripts/test_arm_motion.py
+python main.py
+```
+
+Care-app flow is unchanged: Caregiver → Start meal → `next_bite` → Jetson state machine → TCP → Pi → arm.
 
 ---
 

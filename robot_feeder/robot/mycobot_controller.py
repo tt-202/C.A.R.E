@@ -1,14 +1,19 @@
-"""Thin wrapper around pymycobot for myCobot 320."""
+"""Thin wrapper around pymycobot for myCobot 320 (direct serial on Jetson)."""
 
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from robot.coordinates import HOME_COORDS
 
+if TYPE_CHECKING:
+    from config import Settings
+
 logger = logging.getLogger(__name__)
+
+ArmController = Any  # MyCobotController | PiArmSocketController
 
 
 class MyCobotController:
@@ -58,3 +63,21 @@ class MyCobotController:
     def wait_until_done(self, seconds: float = 2.0) -> None:
         """Fixed wait after coord moves (replace with encoder feedback if available)."""
         self.wait(seconds)
+
+
+def create_robot_controller(settings: "Settings") -> ArmController:
+    """Serial on Jetson, or TCP to pi_arm_server on myCobot 320 Pi."""
+    backend = settings.arm_backend.strip().lower()
+    if backend in ("pi_socket", "socket", "pi"):
+        from robot.arm_socket_client import PiArmSocketController
+
+        return PiArmSocketController(
+            host=settings.arm_server_host,
+            port=settings.arm_server_port,
+            dry_run=settings.dry_run,
+        )
+    return MyCobotController(
+        port=settings.mycobot_port,
+        baud=settings.mycobot_baud,
+        dry_run=settings.dry_run,
+    )

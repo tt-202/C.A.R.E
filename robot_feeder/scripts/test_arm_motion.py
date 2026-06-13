@@ -11,12 +11,16 @@ sys.path.insert(0, str(ROOT))
 
 from config import load_settings
 from robot.motion_planner import MotionPlanner
-from robot.mycobot_controller import MyCobotController
+from robot.mycobot_controller import create_robot_controller
 
 
 def main() -> int:
     settings = load_settings()
-    print(f"DRY_RUN={settings.dry_run} port={settings.mycobot_port}")
+    print(f"ARM_BACKEND={settings.arm_backend} DRY_RUN={settings.dry_run}")
+    if settings.arm_backend == "serial":
+        print(f"  port={settings.mycobot_port}")
+    else:
+        print(f"  Pi server={settings.arm_server_host}:{settings.arm_server_port}")
     if settings.dry_run:
         print("  Arm will NOT move while DRY_RUN is true.")
         print("  Fix: in robot_feeder/.env set DRY_RUN=false")
@@ -28,11 +32,7 @@ def main() -> int:
             print("Aborted.")
             return 0
 
-    robot = MyCobotController(
-        port=settings.mycobot_port,
-        baud=settings.mycobot_baud,
-        dry_run=settings.dry_run,
-    )
+    robot = create_robot_controller(settings)
     robot.connect()
     planner = MotionPlanner(robot)
 
