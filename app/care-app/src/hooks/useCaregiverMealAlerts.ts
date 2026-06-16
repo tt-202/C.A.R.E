@@ -5,11 +5,12 @@ import { onAuthStateChanged } from "firebase/auth";
 import { doc, onSnapshot } from "firebase/firestore";
 import { getClientAuth, getClientFirestore, isFirebaseConfigured } from "@/lib/firebaseClient";
 import {
-  formatMealDoneNotification,
+  careAlertNotificationTag,
+  formatCareAlertNotification,
   MEAL_DONE_CHANNEL,
   MEAL_DONE_STORAGE_KEY,
-  parseMealDoneAlert,
-  type MealDoneAlertPayload,
+  parseCareAlert,
+  type CareAlertPayload,
 } from "@/lib/mealDoneAlert";
 import { showBrowserNotification } from "@/hooks/useMealReminders";
 
@@ -20,6 +21,7 @@ export type CaregiverMealAlertPayload = {
   title: string;
   body: string;
   finishedAtMs: number;
+  severity: "success" | "emergency";
 };
 
 type Options = {
@@ -62,15 +64,16 @@ export function useCaregiverMealAlerts({ profileUid, enabled, getIdToken, onAler
     lastSeenRef.current = loadLastSeen(profileUid);
 
     const deliver = (raw: unknown) => {
-      const alert = parseMealDoneAlert(raw);
+      const alert = parseCareAlert(raw);
       if (!alert || alert.finishedAtMs <= lastSeenRef.current) return;
 
       lastSeenRef.current = alert.finishedAtMs;
       saveLastSeen(profileUid, alert.finishedAtMs);
 
-      const { title, body } = formatMealDoneNotification(alert);
-      onAlertRef.current?.({ title, body, finishedAtMs: alert.finishedAtMs });
-      showBrowserNotification(title, body, `meal-done-${alert.finishedAtMs}`);
+      const { title, body } = formatCareAlertNotification(alert);
+      const severity = alert.type === "meal_emergency" ? "emergency" : "success";
+      onAlertRef.current?.({ title, body, finishedAtMs: alert.finishedAtMs, severity });
+      showBrowserNotification(title, body, careAlertNotificationTag(alert));
     };
 
     const poll = async () => {
@@ -81,7 +84,7 @@ export function useCaregiverMealAlerts({ profileUid, enabled, getIdToken, onAler
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) return;
-        const data = (await res.json()) as { alert?: MealDoneAlertPayload | null };
+        const data = (await res.json()) as { alert?: CareAlertPayload | null };
         if (data.alert) deliver(data.alert);
       } catch {
         /* ignore */

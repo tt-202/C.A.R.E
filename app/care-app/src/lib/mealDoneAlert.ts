@@ -10,6 +10,17 @@ export type MealDoneAlertPayload = {
   plannedMealTime: string;
 };
 
+export type MealEmergencyAlertPayload = {
+  type: "meal_emergency";
+  finishedAtMs: number;
+  careRecipientName: string;
+  caregiverName: string;
+  bitesTotal: number;
+  plannedMealTime: string;
+};
+
+export type CareAlertPayload = MealDoneAlertPayload | MealEmergencyAlertPayload;
+
 export function formatMealDoneNotification(alert: MealDoneAlertPayload): {
   title: string;
   body: string;
@@ -25,8 +36,34 @@ export function formatMealDoneNotification(alert: MealDoneAlertPayload): {
   return { title, body };
 }
 
-/** Same-browser / same-device: caregiver tab hears this immediately (no 15s poll wait). */
-export function broadcastMealFinishedLocally(alert: MealDoneAlertPayload): void {
+export function formatMealEmergencyNotification(alert: MealEmergencyAlertPayload): {
+  title: string;
+  body: string;
+} {
+  const name = alert.careRecipientName || "User";
+  const title = `C.A.R.E — Emergency: ${name} needs help`;
+  const mealPart = alert.plannedMealTime ? ` during ${alert.plannedMealTime}` : "";
+  const bitePart =
+    alert.bitesTotal > 0
+      ? ` ${alert.bitesTotal} bite${alert.bitesTotal === 1 ? "" : "s"} were recorded before the stop.`
+      : "";
+  const body = `${name} pressed Emergency stop${mealPart}.${bitePart} Please check on them.`.trim();
+  return { title, body };
+}
+
+export function formatCareAlertNotification(alert: CareAlertPayload): { title: string; body: string } {
+  if (alert.type === "meal_emergency") {
+    return formatMealEmergencyNotification(alert);
+  }
+  return formatMealDoneNotification(alert);
+}
+
+export function careAlertNotificationTag(alert: CareAlertPayload): string {
+  return `${alert.type}-${alert.finishedAtMs}`;
+}
+
+/** Same-browser / same-device: caregiver tab hears this immediately (no poll wait). */
+export function broadcastCareAlertLocally(alert: CareAlertPayload): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.setItem(MEAL_DONE_STORAGE_KEY, JSON.stringify(alert));
@@ -41,6 +78,29 @@ export function broadcastMealFinishedLocally(alert: MealDoneAlertPayload): void 
   } catch {
     /* ignore */
   }
+}
+
+/** @deprecated use broadcastCareAlertLocally */
+export function broadcastMealFinishedLocally(alert: MealDoneAlertPayload): void {
+  broadcastCareAlertLocally(alert);
+}
+
+export function parseMealEmergencyAlert(data: unknown): MealEmergencyAlertPayload | null {
+  if (!data || typeof data !== "object") return null;
+  const row = data as Record<string, unknown>;
+  if (row.type !== "meal_emergency" || typeof row.finishedAtMs !== "number") return null;
+  return {
+    type: "meal_emergency",
+    finishedAtMs: row.finishedAtMs,
+    careRecipientName: typeof row.careRecipientName === "string" ? row.careRecipientName : "",
+    caregiverName: typeof row.caregiverName === "string" ? row.caregiverName : "",
+    bitesTotal: typeof row.bitesTotal === "number" ? row.bitesTotal : 0,
+    plannedMealTime: typeof row.plannedMealTime === "string" ? row.plannedMealTime : "",
+  };
+}
+
+export function parseCareAlert(data: unknown): CareAlertPayload | null {
+  return parseMealDoneAlert(data) ?? parseMealEmergencyAlert(data);
 }
 
 export function parseMealDoneAlert(data: unknown): MealDoneAlertPayload | null {

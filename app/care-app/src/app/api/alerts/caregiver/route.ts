@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/authRequest";
 import { getCareContext } from "@/lib/carePair";
-import { getLatestMealFinishedAlert } from "@/lib/careAlertsFirestore";
+import { getLatestCareAlert } from "@/lib/careAlertsFirestore";
 
 export async function GET(request: NextRequest) {
   try {
@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
 
     const sinceRaw = request.nextUrl.searchParams.get("since");
     const since = sinceRaw ? Number(sinceRaw) : 0;
-    const latest = await getLatestMealFinishedAlert(careCtx.carePairId);
+    const latest = await getLatestCareAlert(careCtx.carePairId);
     if (!latest || latest.finishedAtMs <= since) {
       return NextResponse.json({ alert: null });
     }

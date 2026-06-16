@@ -33,7 +33,7 @@ import {
   type PlannedMealSlot,
 } from "@/lib/mealSchedule";
 import { formatProfileSaveError, createUserInvite, saveMealSchedule } from "@/lib/saveCareProfile";
-import { notifyCaregiverMealFinished } from "@/lib/notifyCaregiver";
+import { notifyCaregiverMealEmergency, notifyCaregiverMealFinished } from "@/lib/notifyCaregiver";
 import { useCaregiverMealAlerts } from "@/hooks/useCaregiverMealAlerts";
 import {
   getNotificationPermission,
@@ -120,10 +120,15 @@ export default function CareFeedingApp({
   );
   const [scheduleBusy, setScheduleBusy] = useState(false);
   const [scheduleMessage, setScheduleMessage] = useState<string | null>(null);
-  const [activeReminder, setActiveReminder] = useState<string | null>(null);
+  const [activeAlert, setActiveAlert] = useState<{
+    title?: string;
+    body: string;
+    severity: "info" | "success" | "emergency";
+  } | null>(null);
   const [mealHistory, setMealHistory] = useState<MealHistoryEntry[]>([]);
   const [apiError, setApiError] = useState<string | null>(null);
   const [doneMessage, setDoneMessage] = useState<string | null>(null);
+  const [doneMessageEmergency, setDoneMessageEmergency] = useState(false);
   const [startBusy, setStartBusy] = useState(false);
   const [nextPlannedMeal, setNextPlannedMeal] = useState(() =>
     formatPlannedMealDisplay(upcomingMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule))),
@@ -186,17 +191,31 @@ export default function CareFeedingApp({
     await scheduleLocalMealReminders(normalized, careRecipientName ?? "User");
   }, [previewMode, isUser, careRecipientName]);
 
-  const handleInAppAlert = useCallback((payload: { body: string }) => {
-    setActiveReminder(payload.body);
-    window.setTimeout(() => setActiveReminder(null), 60_000);
-  }, []);
+  const handleInAppAlert = useCallback(
+    (payload: { title?: string; body: string; severity?: "info" | "success" | "emergency" }) => {
+      setActiveAlert({
+        title: payload.title,
+        body: payload.body,
+        severity: payload.severity ?? "info",
+      });
+      window.setTimeout(() => setActiveAlert(null), 60_000);
+    },
+    [],
+  );
+
+  const handleMealReminder = useCallback(
+    (payload: { title: string; body: string }) => {
+      handleInAppAlert({ title: payload.title, body: payload.body, severity: "info" });
+    },
+    [handleInAppAlert],
+  );
 
   useMealReminders({
     schedule: mealSchedule,
     careRecipientName: careRecipientName ?? "User",
     enabled: !previewMode && !isUser,
     getIdToken,
-    onReminder: handleInAppAlert,
+    onReminder: handleMealReminder,
   });
 
   useFcmPush({
@@ -204,14 +223,23 @@ export default function CareFeedingApp({
     profileUid: firebaseUid,
     role,
     getIdToken,
-    onForegroundMessage: (body) => handleInAppAlert({ body }),
+    onForegroundMessage: (body) =>
+      handleInAppAlert({
+        body,
+        severity: /emergency/i.test(body) ? "emergency" : "info",
+      }),
   });
 
   useCaregiverMealAlerts({
     profileUid,
     enabled: !previewMode && !isUser,
     getIdToken,
-    onAlert: handleInAppAlert,
+    onAlert: (payload) =>
+      handleInAppAlert({
+        title: payload.title,
+        body: payload.body,
+        severity: payload.severity,
+      }),
   });
 
   useEffect(() => {
@@ -452,17 +480,24 @@ export default function CareFeedingApp({
     [applyPlannedMealSlot],
   );
 
-  const notifyCaregiverIfUserFinished = useCallback(
-    async (bitesTotal: number, plannedMealTime: string) => {
+  const notifyCaregiverAfterMealEnd = useCallback(
+    async (bitesTotal: number, plannedMealTime: string, emergency: boolean) => {
       if (!isUser || previewMode) return;
-      const result = await notifyCaregiverMealFinished(getIdTokenRef.current, {
+      const payload = {
         careRecipientName: careRecipientName ?? "User",
         caregiverName: caregiverName ?? "Caregiver",
         bitesTotal,
         plannedMealTime,
-      });
+      };
+      const result = emergency
+        ? await notifyCaregiverMealEmergency(getIdTokenRef.current, payload)
+        : await notifyCaregiverMealFinished(getIdTokenRef.current, payload);
       if (!result.ok) {
-        setApiError(`Could not notify caregiver: ${result.error}`);
+        setApiError(
+          emergency
+            ? `Could not send emergency alert to caregiver: ${result.error}`
+            : `Could not notify caregiver: ${result.error}`,
+        );
       }
     },
     [isUser, previewMode, careRecipientName, caregiverName],
@@ -487,6 +522,7 @@ export default function CareFeedingApp({
   const finishMealOnServer = async (opts: { complete: boolean; emergency: boolean }) => {
     setApiError(null);
     setDoneMessage(null);
+    setDoneMessageEmergency(false);
     const bitesTotal = bitesCompleted;
     const plannedMealTime = plannedMealTimeRef.current;
 
@@ -502,7 +538,7 @@ export default function CareFeedingApp({
       setBitesCompleted(0);
       mealStartedAtRef.current = null;
       resetPlannedMealSlot(plannedMealTime);
-      await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime);
+      await notifyCaregiverAfterMealEnd(bitesTotal, plannedMealTime, opts.emergency);
       return;
     }
 
@@ -543,16 +579,25 @@ export default function CareFeedingApp({
         const nextLabel = formatPlannedMealDisplay(
           nextMealSlotAfter(parsePlannedMealLabel(plannedMealTime), mealScheduleRef.current),
         );
-        setDoneMessage(
-          isUser
-            ? `Meal saved at ${endedLabel}. Next: ${nextLabel}.`
-            : `Meal saved for ${careRecipientName ?? "user"} at ${endedLabel}. Next: ${nextLabel}.`,
-        );
+        if (opts.emergency) {
+          setDoneMessageEmergency(true);
+          setDoneMessage(
+            isUser
+              ? `Emergency recorded at ${endedLabel}. Your caregiver has been notified. Next: ${nextLabel}.`
+              : `Emergency stop saved for ${careRecipientName ?? "user"} at ${endedLabel}. Next: ${nextLabel}.`,
+          );
+        } else {
+          setDoneMessage(
+            isUser
+              ? `Meal saved at ${endedLabel}. Next: ${nextLabel}.`
+              : `Meal saved for ${careRecipientName ?? "user"} at ${endedLabel}. Next: ${nextLabel}.`,
+          );
+        }
       } else {
         await loadHistory();
       }
 
-      await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime);
+      await notifyCaregiverAfterMealEnd(bitesTotal, plannedMealTime, opts.emergency);
     } catch {
       setApiError("Could not save this meal. Your next sync may show partial data.");
       mealIdRef.current = null;
@@ -562,7 +607,7 @@ export default function CareFeedingApp({
       resetPlannedMealSlot(plannedMealTime);
       void refreshMealReminders();
       await loadHistory();
-      await notifyCaregiverIfUserFinished(bitesTotal, plannedMealTime);
+      await notifyCaregiverAfterMealEnd(bitesTotal, plannedMealTime, opts.emergency);
     }
   };
 
@@ -816,13 +861,38 @@ export default function CareFeedingApp({
           </p>
         ) : null}
 
-        {activeReminder ? (
-          <p
-            className="rounded-2xl border-2 border-amber-400 bg-amber-200 px-4 py-3 text-center text-lg font-bold text-amber-950"
+        {activeAlert ? (
+          <div
+            className={cn(
+              "rounded-2xl border-2 px-4 py-3 text-center shadow-md",
+              activeAlert.severity === "emergency"
+                ? "border-red-700 bg-red-100 text-red-950"
+                : activeAlert.severity === "success"
+                  ? "border-green-700 bg-green-100 text-green-950"
+                  : "border-amber-400 bg-amber-200 text-amber-950",
+            )}
             role="alert"
           >
-            {activeReminder}
-          </p>
+            {activeAlert.severity === "emergency" ? (
+              <p className="flex items-center justify-center gap-2 text-lg font-black uppercase tracking-wide">
+                <AlertTriangle className="h-6 w-6 shrink-0" aria-hidden />
+                Emergency
+              </p>
+            ) : null}
+            {activeAlert.title ? (
+              <p
+                className={cn(
+                  "font-bold",
+                  activeAlert.severity === "emergency" ? "text-xl" : "text-lg",
+                )}
+              >
+                {activeAlert.title}
+              </p>
+            ) : null}
+            <p className={cn("font-semibold", activeAlert.title ? "mt-1 text-base" : "text-lg")}>
+              {activeAlert.body}
+            </p>
+          </div>
         ) : null}
 
         {isUser ? (
@@ -852,7 +922,21 @@ export default function CareFeedingApp({
                 Emergency stop
               </Button>
               {doneMessage ? (
-                <p className="col-span-full text-center text-base font-medium text-amber-100" role="status">
+                <p
+                  className={cn(
+                    "col-span-full rounded-2xl border-2 px-4 py-3 text-center text-base font-bold",
+                    doneMessageEmergency
+                      ? "border-red-800 bg-red-100 text-red-950"
+                      : "border-transparent text-amber-100 font-medium",
+                  )}
+                  role="status"
+                >
+                  {doneMessageEmergency ? (
+                    <span className="mb-1 flex items-center justify-center gap-2 text-lg font-black uppercase">
+                      <AlertTriangle className="h-5 w-5 shrink-0" aria-hidden />
+                      Emergency
+                    </span>
+                  ) : null}
                   {doneMessage}
                 </p>
               ) : null}
@@ -878,7 +962,7 @@ export default function CareFeedingApp({
                 </p>
                 <p className="mt-1 text-2xl font-black text-stone-950">{nextPlannedMeal}</p>
                 <p className="mt-2 text-sm font-medium text-stone-700">
-                  After Done or Emergency stop, the schedule moves to the next meal.
+                  After Done (meal complete) or Emergency stop, the schedule moves to the next meal.
                 </p>
               </div>
 
@@ -958,7 +1042,21 @@ export default function CareFeedingApp({
                 </Button>
               </div>
               {doneMessage ? (
-                <p className="text-center text-base font-medium text-amber-100" role="status">
+                <p
+                  className={cn(
+                    "rounded-2xl border-2 px-4 py-3 text-center text-base font-bold",
+                    doneMessageEmergency
+                      ? "border-red-800 bg-red-100 text-red-950"
+                      : "font-medium text-amber-100",
+                  )}
+                  role="status"
+                >
+                  {doneMessageEmergency ? (
+                    <span className="mb-1 flex items-center justify-center gap-2 text-lg font-black uppercase">
+                      <AlertTriangle className="h-5 w-5 shrink-0" aria-hidden />
+                      Emergency
+                    </span>
+                  ) : null}
                   {doneMessage}
                 </p>
               ) : null}
@@ -973,8 +1071,8 @@ export default function CareFeedingApp({
               {isUser ? "My meal history" : "User meal history"}
             </h2>
             <p className="text-center text-base text-amber-100/90">
-              Meals saved when someone taps <strong className="text-white">Done</strong> or{" "}
-              <strong className="text-white">Emergency stop</strong>. Bites come from each{" "}
+              Meals saved when someone taps <strong className="text-white">Done</strong> (meal complete) or{" "}
+              <strong className="text-white">Emergency stop</strong> (alerts caregiver). Bites come from each{" "}
               <strong className="text-white">feed button</strong> press on the robot.
             </p>
 
