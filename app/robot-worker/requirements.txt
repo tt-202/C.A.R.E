@@ -1,3 +1,7 @@
 firebase-admin>=6.5.0
-# Install when hardware is wired (match Elephant Robotics docs for your firmware):
-# pymycobot>=3.9.0
+# Hardware (pip install when DRY_RUN=false on Jetson):
+# opencv-python>=4.8.0
+# mediapipe>=0.10.0
+# pupil-apriltags
+# adafruit-circuitpython-vl53l1x
+# Jetson.GPIO

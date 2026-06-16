@@ -1,3 +1,13 @@
 .DS_Store
 node_modules/
 *.log
+.env
+.env.*
+!.env.example
+venv/
+__pycache__/
+*.pyc
+face_landmarker.task
+latest_plate_scan.py
+*-sa.json
+firebase-service-account.json

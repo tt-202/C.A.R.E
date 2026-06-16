@@ -1,6 +1,13 @@
 .env
+.env.*
+!.env.example
 venv/
 __pycache__/
 *.pyc
 *-sa.json
-care-robot-sa.json
+firebase-service-account.json
+face_landmarker.task
+latest_plate_scan.py
+node_modules/
+.next/
+.DS_Store

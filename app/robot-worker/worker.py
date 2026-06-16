@@ -36,7 +36,7 @@ from robot_stats import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("care-robot-worker")
 
-ALLOWED = frozenset({"home", "next_bite", "pause", "stop"})
+ALLOWED = frozenset({"home", "next_bite", "pause", "stop", "calibrate_plate"})
 
 
 def utc_now() -> datetime:
@@ -104,8 +104,16 @@ def handle_gpio_feed(db: firestore.Client, rid: str, buttons: ButtonManager) -> 
 
 def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
     section = (current_section(db, rid) % 4) + 1
-    set_live_state(db, rid, state="IDLE", section=section, emergency=False)
-    logger.info("GPIO plate button → section %s", section)
+    set_live_state(db, rid, state="CALIBRATING", section=section, emergency=False)
+    logger.info("GPIO plate button → calibrate plate, next section %s", section)
+    try:
+        execute_command("calibrate_plate", None)
+        set_live_state(db, rid, state="IDLE", section=section, emergency=False)
+        logger.info("Plate calibration done; active section %s", section)
+    except Exception:
+        logger.exception("Plate calibration failed")
+        record_failed_feed(db, rid)
+        set_live_state(db, rid, state="IDLE", section=section, emergency=False)
 
 
 def handle_gpio_estop(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
