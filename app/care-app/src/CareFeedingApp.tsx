@@ -223,10 +223,11 @@ export default function CareFeedingApp({
     profileUid: firebaseUid,
     role,
     getIdToken,
-    onForegroundMessage: (body) =>
+    onForegroundMessage: (payload) =>
       handleInAppAlert({
-        body,
-        severity: /emergency/i.test(body) ? "emergency" : "info",
+        title: payload.title,
+        body: payload.body,
+        severity: payload.alertType === "meal_emergency" ? "emergency" : "info",
       }),
   });
 
@@ -595,9 +596,8 @@ export default function CareFeedingApp({
         }
       } else {
         await loadHistory();
+        await notifyCaregiverAfterMealEnd(bitesTotal, plannedMealTime, opts.emergency);
       }
-
-      await notifyCaregiverAfterMealEnd(bitesTotal, plannedMealTime, opts.emergency);
     } catch {
       setApiError("Could not save this meal. Your next sync may show partial data.");
       mealIdRef.current = null;
@@ -1097,7 +1097,7 @@ export default function CareFeedingApp({
               <CardContent className="space-y-4 p-5 md:p-6">
                 <div className="flex flex-col items-center justify-between gap-3 sm:flex-row">
                   <p className="text-lg font-bold text-stone-950">Past meals (newest first)</p>
-                  {!isUser && mealHistory.length > 0 ? (
+                  {mealHistory.length > 0 ? (
                     <Button
                       type="button"
                       variant="outline"

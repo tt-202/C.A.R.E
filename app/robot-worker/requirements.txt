@@ -1,4 +1,5 @@
 firebase-admin>=6.5.0
+google-cloud-firestore>=2.16.0
 # Hardware (pip install when DRY_RUN=false on Jetson):
 # opencv-python>=4.8.0
 # mediapipe>=0.10.0

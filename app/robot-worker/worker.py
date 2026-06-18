@@ -17,11 +17,11 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import firebase_admin
 from firebase_admin import credentials, firestore
-from google.cloud.firestore_v1.base_query import FieldFilter
 
 from gpio_buttons import ButtonManager, ButtonPoller
 from robot_motion import execute_command
@@ -37,6 +37,37 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("care-robot-worker")
 
 ALLOWED = frozenset({"home", "next_bite", "pause", "stop", "calibrate_plate"})
+
+_ROOT = Path(__file__).resolve().parent
+_ENV_LOADED = False
+
+
+def _load_dotenv() -> None:
+    """Load app/robot-worker/.env (does not override existing shell env)."""
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+    env_file = _ROOT / ".env"
+    if not env_file.is_file():
+        _ENV_LOADED = True
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+    _ENV_LOADED = True
+
+
+def _resolve_credentials_path(raw: str) -> str:
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = (_ROOT / path).resolve()
+    return str(path)
 
 
 def utc_now() -> datetime:
@@ -121,11 +152,22 @@ def handle_gpio_estop(db: firestore.Client, rid: str, buttons: ButtonManager) ->
     logger.warning("GPIO e-stop pressed")
 
 
+def _change_is_added_or_modified(change: Any) -> bool:
+    """Works across firebase-admin / google-cloud-firestore versions on Jetson."""
+    t = getattr(change, "type", None)
+    if t is None:
+        return False
+    name = getattr(t, "name", "")
+    if name in ("ADDED", "MODIFIED"):
+        return True
+    if t in (1, 2):
+        return True
+    text = str(t)
+    return text.endswith("ADDED") or text.endswith("MODIFIED")
+
+
 def process_change(db: firestore.Client, col: firestore.CollectionReference, change: Any) -> None:
-    if change.type not in (
-        firestore.DocumentChange.Type.ADDED,
-        firestore.DocumentChange.Type.MODIFIED,
-    ):
+    if not _change_is_added_or_modified(change):
         return
     snap = change.document
     data = snap.to_dict() or {}
@@ -163,16 +205,28 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
 
 
 def main() -> int:
-    cred_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if not cred_path or not os.path.isfile(cred_path):
-        logger.error("Set GOOGLE_APPLICATION_CREDENTIALS to a service account JSON file")
+    _load_dotenv()
+    raw_cred = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not raw_cred:
+        logger.error("GOOGLE_APPLICATION_CREDENTIALS is not set. Add it to %s/.env", _ROOT)
         return 1
+    cred_path = _resolve_credentials_path(raw_cred)
+    if not os.path.isfile(cred_path):
+        logger.error("Firebase credentials file not found: %s", cred_path)
+        logger.error("Put firebase-service-account.json in %s and set:", _ROOT)
+        logger.error("  GOOGLE_APPLICATION_CREDENTIALS=./firebase-service-account.json")
+        logger.error("Or use the full path to the JSON file.")
+        return 1
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = cred_path
 
-    if not firebase_admin._apps:
-        cred = credentials.Certificate(cred_path)
-        firebase_admin.initialize_app(cred)
-
-    db = firestore.client()
+    try:
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(cred_path)
+            firebase_admin.initialize_app(cred)
+        db = firestore.client()
+    except Exception:
+        logger.exception("Firebase init failed — check GOOGLE_APPLICATION_CREDENTIALS JSON")
+        return 1
     rid = robot_id()
     mark_jetson_online(db, rid)
     buttons = ButtonManager()
@@ -180,7 +234,12 @@ def main() -> int:
     poller = ButtonPoller(buttons)
     poller.start()
     col = commands_col(db)
-    query = col.where(filter=FieldFilter("status", "==", "pending"))
+    try:
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
+        query = col.where(filter=FieldFilter("status", "==", "pending"))
+    except ImportError:
+        query = col.where("status", "==", "pending")
 
     def on_snapshot(doc_snapshots: list[Any], changes: list[Any], read_time: Any) -> None:
         for change in changes:

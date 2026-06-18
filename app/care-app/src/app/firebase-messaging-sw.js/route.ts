@@ -36,6 +36,13 @@ messaging.onBackgroundMessage(function (payload) {
       ? payload.notification.body
       : '';
 
+  const alertType =
+    payload.data && payload.data.alertType
+      ? payload.data.alertType
+      : '';
+
+  const isEmergency = alertType === 'meal_emergency' || /emergency/i.test(title);
+
   const link =
     payload.data && payload.data.link
       ? payload.data.link
@@ -43,13 +50,23 @@ messaging.onBackgroundMessage(function (payload) {
         ? payload.fcmOptions.link
         : '/';
 
+  const tag =
+    payload.data && payload.data.tag
+      ? payload.data.tag
+      : isEmergency
+        ? 'care-emergency'
+        : 'care-push';
+
   return self.registration.showNotification(title, {
     body: body,
-    tag: payload.data && payload.data.tag ? payload.data.tag : 'care-push',
+    tag: tag,
     icon: '/icon.png',
     badge: '/icon.png',
+    requireInteraction: isEmergency,
+    vibrate: isEmergency ? [200, 100, 200, 100, 200] : undefined,
     data: {
       link: link,
+      alertType: alertType,
     },
   });
 });

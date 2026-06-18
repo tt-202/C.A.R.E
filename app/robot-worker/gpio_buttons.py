@@ -34,9 +34,9 @@ class ButtonManager:
         debounce_ms: int | None = None,
     ) -> None:
         self.enabled = _env_bool("BUTTONS_ENABLED", False) if enabled is None else enabled
-        self.feed_pin = feed_pin if feed_pin is not None else int(os.environ.get("GPIO_FEED_PIN", "17"))
-        self.plate_pin = plate_pin if plate_pin is not None else int(os.environ.get("GPIO_PLATE_PIN", "27"))
-        self.estop_pin = estop_pin if estop_pin is not None else int(os.environ.get("GPIO_ESTOP_PIN", "22"))
+        self.feed_pin = feed_pin if feed_pin is not None else int(os.environ.get("GPIO_FEED_PIN", "33"))
+        self.plate_pin = plate_pin if plate_pin is not None else int(os.environ.get("GPIO_PLATE_PIN", "35"))
+        self.estop_pin = estop_pin if estop_pin is not None else int(os.environ.get("GPIO_ESTOP_PIN", "37"))
         self.debounce_ms = debounce_ms if debounce_ms is not None else int(os.environ.get("GPIO_DEBOUNCE_MS", "80"))
         self._gpio = None
         self._lock = threading.Lock()
@@ -52,17 +52,27 @@ class ButtonManager:
             logger.info("GPIO buttons disabled (BUTTONS_ENABLED=false)")
             return False
         try:
-            import RPi.GPIO as GPIO  # type: ignore[import-not-found]
+            try:
+                import RPi.GPIO as GPIO  # type: ignore[import-not-found]
+            except ImportError:
+                import Jetson.GPIO as GPIO  # type: ignore[import-not-found]
         except ImportError:
-            logger.warning("RPi.GPIO not installed — buttons disabled")
+            logger.warning("RPi.GPIO / Jetson.GPIO not installed — buttons disabled")
             self.enabled = False
             return False
 
-        self._gpio = GPIO
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
-        for pin in (self.feed_pin, self.plate_pin, self.estop_pin):
-            GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        try:
+            self._gpio = GPIO
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setwarnings(False)
+            for pin in (self.feed_pin, self.plate_pin, self.estop_pin):
+                GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        except Exception as e:
+            logger.warning("GPIO setup failed (%s) — buttons disabled", e)
+            self.enabled = False
+            self._gpio = None
+            return False
+
         logger.info(
             "GPIO buttons feed=%s plate=%s estop=%s (BCM)",
             self.feed_pin,

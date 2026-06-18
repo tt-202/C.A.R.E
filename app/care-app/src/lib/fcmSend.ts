@@ -8,6 +8,8 @@ export type PushPayload = {
   /** Opens this path when the notification is clicked (web). */
   link?: string;
   tag?: string;
+  /** meal_finished | meal_emergency — used by the service worker and foreground handler. */
+  alertType?: string;
 };
 
 function getAdminMessaging() {
@@ -28,6 +30,11 @@ export async function sendPushToUser(
     notification: {
       title: payload.title,
       body: payload.body,
+    },
+    data: {
+      link,
+      tag: payload.tag ?? "care-push",
+      ...(payload.alertType ? { alertType: payload.alertType } : {}),
     },
     webpush: {
       notification: {

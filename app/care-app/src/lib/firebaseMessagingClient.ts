@@ -218,7 +218,7 @@ export async function obtainFcmDeviceToken(): Promise<FcmTokenResult> {
 }
 
 export async function subscribeToForegroundFcm(
-  onPayload: (title: string, body: string) => void,
+  onPayload: (title: string, body: string, alertType?: string) => void,
 ): Promise<(() => void) | null> {
   const messagingInstance = await getMessagingInstance();
   if (!messagingInstance) return null;
@@ -226,6 +226,8 @@ export async function subscribeToForegroundFcm(
   return onMessage(messagingInstance, (payload) => {
     const title = payload.notification?.title ?? "C.A.R.E";
     const body = payload.notification?.body ?? "";
-    onPayload(title, body);
+    const alertType =
+      typeof payload.data?.alertType === "string" ? payload.data.alertType : undefined;
+    onPayload(title, body, alertType);
   });
 }

@@ -42,14 +42,13 @@ class FirebaseClient:
         query = self._col.where(filter=FieldFilter("status", "==", "pending"))
 
         def on_snapshot(_: list[Any], changes: list[Any], __: Any) -> None:
-            from firebase_admin import firestore
-
             for change in changes:
-                if change.type not in (
-                    firestore.DocumentChange.Type.ADDED,
-                    firestore.DocumentChange.Type.MODIFIED,
-                ):
-                    continue
+                t = getattr(change, "type", None)
+                name = getattr(t, "name", "") if t is not None else ""
+                if name not in ("ADDED", "MODIFIED") and t not in (1, 2):
+                    text = str(t) if t is not None else ""
+                    if not (text.endswith("ADDED") or text.endswith("MODIFIED")):
+                        continue
                 snap = change.document
                 data = snap.to_dict() or {}
                 if data.get("status") != "pending":

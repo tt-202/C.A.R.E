@@ -11,7 +11,11 @@ type Options = {
   profileUid?: string;
   role: string;
   getIdToken: () => Promise<string>;
-  onForegroundMessage?: (body: string) => void;
+  onForegroundMessage?: (payload: {
+    title: string;
+    body: string;
+    alertType?: string;
+  }) => void;
 };
 
 function storedTokenKey(uid: string) {
@@ -53,8 +57,8 @@ export function useFcmPush({
         }
       }
 
-      unsubForeground = await subscribeToForegroundFcm((title, body) => {
-        onForegroundRef.current?.(body || title);
+      unsubForeground = await subscribeToForegroundFcm((title, body, alertType) => {
+        onForegroundRef.current?.({ title, body, alertType });
         showBrowserNotification(title, body, `fcm-${Date.now()}`);
       });
     })();

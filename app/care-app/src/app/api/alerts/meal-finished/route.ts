@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/authRequest";
-import { getCareContext, listCaregiverFirebaseUidsForPair } from "@/lib/carePair";
-import { publishMealFinishedAlert } from "@/lib/careAlertsFirestore";
-import { formatMealDoneNotification } from "@/lib/mealDoneAlert";
-import { sendPushToUsers } from "@/lib/fcmSend";
+import { getCareContext } from "@/lib/carePair";
+import { getLatestCareAlert } from "@/lib/careAlertsFirestore";
+import {
+  publishAndPushCaregiverMealAlert,
+  shouldSkipMealFinishedPublish,
+} from "@/lib/publishCaregiverMealAlert";
 
 export async function POST(request: NextRequest) {
   try {
@@ -25,25 +27,24 @@ export async function POST(request: NextRequest) {
       /* empty */
     }
 
+    if (await shouldSkipMealFinishedPublish(careCtx.carePairId)) {
+      const latest = await getLatestCareAlert(careCtx.carePairId);
+      return NextResponse.json({ ok: true, alert: latest, skipped: true });
+    }
+
     const bitesTotal = typeof body.bitesTotal === "number" ? body.bitesTotal : 0;
     const pair = careCtx.member!.carePair;
 
-    const alert = await publishMealFinishedAlert(careCtx.carePairId, {
+    const alert = await publishAndPushCaregiverMealAlert({
+      carePairId: careCtx.carePairId,
       careRecipientName: body.careRecipientName?.trim() || pair.careRecipientName || "User",
       caregiverName: body.caregiverName?.trim() || pair.caregiverName || "Caregiver",
       bitesTotal,
       plannedMealTime: body.plannedMealTime?.trim() || "",
+      emergency: false,
     });
 
-    const { title, body: pushBody } = formatMealDoneNotification(alert);
-    const caregiverUids = await listCaregiverFirebaseUidsForPair(careCtx.carePairId);
-    const push = await sendPushToUsers(caregiverUids, {
-      title,
-      body: pushBody,
-      tag: `meal-done-${alert.finishedAtMs}`,
-    });
-
-    return NextResponse.json({ ok: true, alert, push });
+    return NextResponse.json({ ok: true, alert });
   } catch (e) {
     if (e instanceof Error && e.message === "Unauthorized") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/authRequest";
-import { getCareContext, listCaregiverFirebaseUidsForPair } from "@/lib/carePair";
-import { publishMealEmergencyAlert } from "@/lib/careAlertsFirestore";
-import { formatMealEmergencyNotification } from "@/lib/mealDoneAlert";
-import { sendPushToUsers } from "@/lib/fcmSend";
+import { getCareContext } from "@/lib/carePair";
+import { publishAndPushCaregiverMealAlert } from "@/lib/publishCaregiverMealAlert";
 
 export async function POST(request: NextRequest) {
   try {
@@ -28,22 +26,16 @@ export async function POST(request: NextRequest) {
     const bitesTotal = typeof body.bitesTotal === "number" ? body.bitesTotal : 0;
     const pair = careCtx.member!.carePair;
 
-    const alert = await publishMealEmergencyAlert(careCtx.carePairId, {
+    const alert = await publishAndPushCaregiverMealAlert({
+      carePairId: careCtx.carePairId,
       careRecipientName: body.careRecipientName?.trim() || pair.careRecipientName || "User",
       caregiverName: body.caregiverName?.trim() || pair.caregiverName || "Caregiver",
       bitesTotal,
       plannedMealTime: body.plannedMealTime?.trim() || "",
+      emergency: true,
     });
 
-    const { title, body: pushBody } = formatMealEmergencyNotification(alert);
-    const caregiverUids = await listCaregiverFirebaseUidsForPair(careCtx.carePairId);
-    const push = await sendPushToUsers(caregiverUids, {
-      title,
-      body: pushBody,
-      tag: `meal-emergency-${alert.finishedAtMs}`,
-    });
-
-    return NextResponse.json({ ok: true, alert, push });
+    return NextResponse.json({ ok: true, alert });
   } catch (e) {
     if (e instanceof Error && e.message === "Unauthorized") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

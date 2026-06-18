@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/authRequest";
-import { getMealScope, mealOwnershipWhere } from "@/lib/carePair";
+import { getCareContext, getMealScope, mealOwnershipWhere } from "@/lib/carePair";
 import { mealToHistoryEntry } from "@/lib/mealDto";
+import { publishAndPushCaregiverMealAlert } from "@/lib/publishCaregiverMealAlert";
 import { resetRobotMealSession } from "@/lib/robotLiveAdmin";
 import { prisma } from "@/lib/prisma";
 
@@ -54,6 +55,28 @@ export async function POST(request: NextRequest, context: RouteContext) {
         await resetRobotMealSession({ emergency: Boolean(body.emergency) });
       } catch (resetErr) {
         console.warn("[meal stop] robot session reset failed", resetErr);
+      }
+
+      const careCtx = await getCareContext(ctx.uid, { email: ctx.email, displayName: ctx.name });
+      const isEmergency = Boolean(body.emergency);
+      if (
+        careCtx.carePairId &&
+        careCtx.member?.carePair &&
+        (isEmergency || careCtx.role === "user")
+      ) {
+        try {
+          const pair = careCtx.member.carePair;
+          await publishAndPushCaregiverMealAlert({
+            carePairId: careCtx.carePairId,
+            careRecipientName: pair.careRecipientName || "User",
+            caregiverName: pair.caregiverName || "Caregiver",
+            bitesTotal: updated.bitesTotal,
+            plannedMealTime: body.plannedMealTime ?? updated.plannedMealTime ?? "",
+            emergency: isEmergency,
+          });
+        } catch (alertErr) {
+          console.warn("[meal stop] caregiver alert failed", alertErr);
+        }
       }
     }
 
