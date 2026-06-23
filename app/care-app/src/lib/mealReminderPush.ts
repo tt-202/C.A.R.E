@@ -1,21 +1,24 @@
 import { MEAL_SLOTS, normalizeMealSchedule, type MealSchedule } from "@/lib/mealSchedule";
+import { resolveMealTimezone, zonedClock } from "@/lib/mealReminderTimezone";
 
 /** Notify this many minutes before the scheduled meal time. */
 export const REMINDER_LEAD_MINUTES = 60;
 /** Matches Vercel cron interval (1 min) with a small buffer. */
 export const REMINDER_WINDOW_MINUTES = 6;
 
-function todayKey(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function timeToMinutes(time: string): number {
   const [h, m] = time.split(":").map((x) => parseInt(x, 10));
   return (h || 0) * 60 + (m || 0);
 }
 
-export function mealReminderFireKey(slotKey: string, day = todayKey()): string {
-  return `${day}:${slotKey}:early`;
+export function mealReminderFireKey(
+  slotKey: string,
+  day?: string,
+  timeZone?: string,
+  now = new Date(),
+): string {
+  const dateKey = day ?? zonedClock(now, resolveMealTimezone(timeZone)).dateKey;
+  return `${dateKey}:${slotKey}:early`;
 }
 
 export function buildMealReminderPush(
@@ -31,21 +34,22 @@ export function buildMealReminderPush(
   };
 }
 
-/** Slots that should fire a reminder REMINDER_LEAD_MINUTES before meal time (server local clock). */
+/** Slots due REMINDER_LEAD_MINUTES before meal time in the care pair's timezone. */
 export function dueMealReminderSlots(
   schedule: MealSchedule,
   now = new Date(),
+  timeZone?: string,
 ): Array<{ slotKey: string; slotLabel: string; time: string; fireKey: string }> {
   const normalized = normalizeMealSchedule(schedule);
-  const nowMins = now.getHours() * 60 + now.getMinutes();
-  const day = todayKey();
+  const tz = resolveMealTimezone(timeZone);
+  const { nowMins, dateKey } = zonedClock(now, tz);
   const due: Array<{ slotKey: string; slotLabel: string; time: string; fireKey: string }> = [];
 
   for (const slot of MEAL_SLOTS) {
     const time = normalized[slot.field];
     const target = timeToMinutes(time);
     const remindAt = target - REMINDER_LEAD_MINUTES;
-    const fireKey = mealReminderFireKey(slot.key, day);
+    const fireKey = mealReminderFireKey(slot.key, dateKey, tz, now);
     if (nowMins < remindAt || nowMins >= remindAt + REMINDER_WINDOW_MINUTES) continue;
     due.push({ slotKey: slot.key, slotLabel: slot.label, time, fireKey });
   }

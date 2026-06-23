@@ -48,6 +48,7 @@ import {
   minutesUntilNextReminder,
   scheduleLocalMealReminders,
 } from "@/lib/scheduleLocalMealReminders";
+import { detectBrowserTimezone } from "@/lib/mealReminderTimezone";
 import { REMINDER_LEAD_MINUTES } from "@/lib/mealReminderPush";
 import { type Timestamp } from "firebase/firestore";
 import { isFirebaseConfigured } from "@/lib/firebaseClient";
@@ -188,7 +189,7 @@ export default function CareFeedingApp({
   const refreshMealReminders = useCallback(async () => {
     if (previewMode || isUser) return;
     const normalized = normalizeMealSchedule(mealScheduleRef.current);
-    await scheduleLocalMealReminders(normalized, careRecipientName ?? "User");
+    await scheduleLocalMealReminders(normalized, careRecipientName ?? "User", detectBrowserTimezone());
   }, [previewMode, isUser, careRecipientName]);
 
   const handleInAppAlert = useCallback(
@@ -214,6 +215,7 @@ export default function CareFeedingApp({
     schedule: mealSchedule,
     careRecipientName: careRecipientName ?? "User",
     enabled: !previewMode && !isUser,
+    timezone: detectBrowserTimezone(),
     getIdToken,
     onReminder: handleMealReminder,
   });
@@ -300,16 +302,29 @@ export default function CareFeedingApp({
     let pushDetail = "";
     if (isFcmConfigured()) {
       const setup = await setupPushOnThisDevice(getIdTokenRef.current, role);
+      const onLocalhost =
+        typeof window !== "undefined" &&
+        (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
       if (!setup.ok) {
-        setScheduleMessage(
-          `Times saved, but push setup failed: ${setup.error ?? "unknown error"}. Allow notifications and save again.`,
-        );
-        return;
+        if (onLocalhost) {
+          pushDetail =
+            " Times saved on server. FCM push often fails on localhost — use your Vercel URL to register this device for background push. Reminders still work here while this tab stays open.";
+        } else {
+          setScheduleMessage(
+            `Times saved, but push setup failed: ${setup.error ?? "unknown error"}. Allow notifications and save again.`,
+          );
+          return;
+        }
+      } else {
+        pushDetail = " Server push is registered for this device.";
       }
-      pushDetail = " Server push is registered for this device.";
     }
 
-    const local = await scheduleLocalMealReminders(normalized, careRecipientName ?? "User");
+    const local = await scheduleLocalMealReminders(
+      normalized,
+      careRecipientName ?? "User",
+      detectBrowserTimezone(),
+    );
     if (local.scheduled > 0) {
       pushDetail += ` ${local.scheduled} reminder(s) scheduled on this device (${REMINDER_LEAD_MINUTES} min before meals, even if the tab is closed).`;
     } else if (local.supported) {
@@ -321,7 +336,7 @@ export default function CareFeedingApp({
       pushDetail += " Keep this tab open or deploy with Firebase for background alerts.";
     }
 
-    const mins = minutesUntilNextReminder(normalized);
+    const mins = minutesUntilNextReminder(normalized, new Date(), detectBrowserTimezone());
     const nextHint =
       mins !== null ? ` Next alert in about ${mins} minute${mins === 1 ? "" : "s"}.` : "";
 

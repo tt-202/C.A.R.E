@@ -3,9 +3,10 @@
 import { useEffect, useRef } from "react";
 import {
   REMINDER_LEAD_MINUTES,
-  REMINDER_WINDOW_MINUTES,
+  dueMealReminderSlots,
 } from "@/lib/mealReminderPush";
-import { MEAL_SLOTS, type MealSchedule } from "@/lib/mealSchedule";
+import { detectBrowserTimezone } from "@/lib/mealReminderTimezone";
+import type { MealSchedule } from "@/lib/mealSchedule";
 import { isFcmConfigured } from "@/lib/firebasePublicConfig";
 import { triggerMealReminderPush } from "@/lib/fcmRegisterApi";
 import { scheduleLocalMealReminders } from "@/lib/scheduleLocalMealReminders";
@@ -13,15 +14,6 @@ import { scheduleLocalMealReminders } from "@/lib/scheduleLocalMealReminders";
 export { REMINDER_LEAD_MINUTES } from "@/lib/mealReminderPush";
 
 const POLL_MS = 15_000;
-
-function todayKey(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function timeToMinutes(time: string): number {
-  const [h, m] = time.split(":").map((x) => parseInt(x, 10));
-  return (h || 0) * 60 + (m || 0);
-}
 
 export type MealReminderPayload = {
   slotKey: string;
@@ -33,6 +25,7 @@ type Options = {
   schedule: MealSchedule;
   careRecipientName: string;
   enabled: boolean;
+  timezone?: string;
   getIdToken?: () => Promise<string>;
   onReminder?: (payload: MealReminderPayload) => void;
 };
@@ -74,45 +67,38 @@ export function useMealReminders({
   schedule,
   careRecipientName,
   enabled,
+  timezone,
   getIdToken,
   onReminder,
 }: Options) {
   const firedRef = useRef<Record<string, string>>({});
+  const tz = timezone ?? detectBrowserTimezone();
 
   useEffect(() => {
     if (!enabled || typeof window === "undefined") return;
 
     if (Notification.permission === "granted") {
-      void scheduleLocalMealReminders(schedule, careRecipientName);
+      void scheduleLocalMealReminders(schedule, careRecipientName, tz);
     }
 
     const check = () => {
-      const now = new Date();
-      const nowMins = now.getHours() * 60 + now.getMinutes();
-      const day = todayKey();
-
-      for (const slot of MEAL_SLOTS) {
-        const time = schedule[slot.field];
-        const target = timeToMinutes(time);
-        const remindAt = target - REMINDER_LEAD_MINUTES;
-        const fireKey = `${day}:${slot.key}:early`;
-        if (firedRef.current[fireKey]) continue;
-        if (nowMins < remindAt || nowMins >= remindAt + REMINDER_WINDOW_MINUTES) continue;
-
-        firedRef.current[fireKey] = "1";
+      const due = dueMealReminderSlots(schedule, new Date(), tz);
+      for (const slot of due) {
+        if (firedRef.current[slot.fireKey]) continue;
+        firedRef.current[slot.fireKey] = "1";
         dispatchReminder(
-          slot.key,
-          slot.label,
-          time,
+          slot.slotKey,
+          slot.slotLabel,
+          slot.time,
           careRecipientName,
-          fireKey,
+          slot.fireKey,
           onReminder,
         );
         if (isFcmConfigured() && getIdToken) {
           void triggerMealReminderPush(getIdToken, {
-            slotKey: slot.key,
-            slotLabel: slot.label,
-            time,
+            slotKey: slot.slotKey,
+            slotLabel: slot.slotLabel,
+            time: slot.time,
             careRecipientName,
           });
         }
@@ -130,7 +116,7 @@ export function useMealReminders({
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [schedule, careRecipientName, enabled, getIdToken, onReminder]);
+  }, [schedule, careRecipientName, enabled, getIdToken, onReminder, tz]);
 }
 
 export function getNotificationPermission(): NotificationPermission | "unsupported" {

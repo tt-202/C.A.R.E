@@ -4,6 +4,7 @@ import {
 } from "@/lib/careProfileStorage";
 import type { UserRole } from "@/AuthPage";
 import { normalizeMealSchedule } from "@/lib/mealSchedule";
+import { detectBrowserTimezone } from "@/lib/mealReminderTimezone";
 
 export type ProfileSaveResult =
   | { ok: true }
@@ -119,6 +120,7 @@ export async function saveMealScheduleOnly(
   getIdToken: () => Promise<string>,
   schedule: { breakfastTime: string; lunchTime: string; dinnerTime: string },
   names?: { careRecipientName: string; caregiverName: string },
+  timezone?: string,
 ): Promise<ProfileSaveResult> {
   const normalized = normalizeMealSchedule(schedule);
   try {
@@ -131,6 +133,7 @@ export async function saveMealScheduleOnly(
       },
       body: JSON.stringify({
         ...normalized,
+        ...(timezone ? { timezone } : {}),
         ...(names
           ? {
               careRecipientName: names.careRecipientName,
@@ -237,7 +240,9 @@ export async function saveMealSchedule(
   const patch = await saveMealScheduleOnly(getIdToken, normalized, {
     careRecipientName,
     caregiverName,
-  });
+  }, typeof Intl !== "undefined"
+    ? detectBrowserTimezone()
+    : undefined);
   if (patch.ok) return patch;
 
   const post = await saveCareProfileToServer(getIdToken, profile, firebaseUid);

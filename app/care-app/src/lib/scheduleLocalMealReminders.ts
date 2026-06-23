@@ -5,12 +5,13 @@ import {
   mealReminderFireKey,
   REMINDER_LEAD_MINUTES,
 } from "@/lib/mealReminderPush";
+import { detectBrowserTimezone, resolveMealTimezone, zonedClock } from "@/lib/mealReminderTimezone";
 import { MEAL_SLOTS, type MealSchedule } from "@/lib/mealSchedule";
 import { registerFcmServiceWorker } from "@/lib/firebaseMessagingClient";
 
 function timeToMinutes(time: string): number {
   const [h, m] = time.split(":").map((x) => parseInt(x, 10));
-  return (h || 0) * 5 + (m || 0);
+  return (h || 0) * 60 + (m || 0);
 }
 
 /** Chrome / Edge: schedule OS notifications via the service worker (works when the tab is closed). */
@@ -26,11 +27,12 @@ export type ScheduleLocalResult = {
 
 /**
  * Schedules one notification per meal slot today, REMINDER_LEAD_MINUTES before meal time.
- * Complements server FCM cron for when the browser tab is closed.
+ * Uses the device local clock (same as the time picker).
  */
 export async function scheduleLocalMealReminders(
   schedule: MealSchedule,
   careRecipientName: string,
+  timeZone?: string,
 ): Promise<ScheduleLocalResult> {
   if (typeof window === "undefined" || Notification.permission !== "granted") {
     return { scheduled: 0, supported: false };
@@ -49,6 +51,7 @@ export async function scheduleLocalMealReminders(
     if (n.tag?.startsWith("meal-early-")) n.close();
   }
 
+  const tz = resolveMealTimezone(timeZone ?? detectBrowserTimezone());
   const now = new Date();
   const nowMs = now.getTime();
   let scheduled = 0;
@@ -73,7 +76,7 @@ export async function scheduleLocalMealReminders(
     await sw.showNotification(title, {
       body,
       tag,
-      data: { fireKey: mealReminderFireKey(slot.key), link: "/" },
+      data: { fireKey: mealReminderFireKey(slot.key, undefined, tz, now), link: "/" },
       showTrigger: new TimestampTriggerCtor(remindAtMs),
     } as NotificationOptions);
     scheduled += 1;
@@ -83,8 +86,13 @@ export async function scheduleLocalMealReminders(
 }
 
 /** Minutes until the next early reminder (REMINDER_LEAD_MINUTES before meal). */
-export function minutesUntilNextReminder(schedule: MealSchedule, now = new Date()): number | null {
-  const nowMins = now.getHours() * 60 + now.getMinutes();
+export function minutesUntilNextReminder(
+  schedule: MealSchedule,
+  now = new Date(),
+  timeZone?: string,
+): number | null {
+  const tz = resolveMealTimezone(timeZone ?? detectBrowserTimezone());
+  const { nowMins } = zonedClock(now, tz);
   let best: number | null = null;
 
   for (const slot of MEAL_SLOTS) {

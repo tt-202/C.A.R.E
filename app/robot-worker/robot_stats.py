@@ -151,6 +151,11 @@ def record_failed_feed(db: firestore.Client, robot_id: str) -> None:
     )
 
 
+def read_live_phase(db: firestore.Client, robot_id: str) -> str:
+    live = _live_ref(db, robot_id).get().to_dict() or {}
+    return str(live.get("state") or "unknown")
+
+
 def publish_button_input(
     db: firestore.Client,
     robot_id: str,
@@ -167,3 +172,39 @@ def publish_button_input(
     if last_pin is not None:
         payload["last_pin"] = last_pin
     _button_input_ref(db, robot_id).set(payload, merge=True)
+
+
+def record_hardware_emergency(
+    db: firestore.Client,
+    robot_id: str,
+    *,
+    reason: str,
+    phase: str,
+    pin: int,
+) -> None:
+    """Firestore status + event log after physical e-stop (reporting only — arm already stopped)."""
+    _live_ref(db, robot_id).set(
+        {
+            "state": "EMERGENCY",
+            "emergency": True,
+            "jetson_online": True,
+            "last_event_type": "emergency_stop",
+            "last_event_reason": reason,
+            "last_event_severity": "critical",
+            "updatedAt": firestore.SERVER_TIMESTAMP,
+        },
+        merge=True,
+    )
+    publish_button_input(db, robot_id, stop_pressed=True, last_pin=pin)
+    _robot_root(db, robot_id).collection("events").add(
+        {
+            "event_type": "emergency_stop",
+            "reason": reason,
+            "phase": phase,
+            "severity": "critical",
+            "source": "jetson",
+            "robot_id": robot_id,
+            "acknowledged": False,
+            "timestamp": firestore.SERVER_TIMESTAMP,
+        }
+    )

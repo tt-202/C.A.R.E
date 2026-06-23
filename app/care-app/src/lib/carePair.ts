@@ -3,6 +3,7 @@ import type { CareMemberRole, CarePair, CarePairMember, User } from "@prisma/cli
 import { withPrisma } from "@/lib/prisma";
 import { ensureUser } from "@/lib/ensureUser";
 import { normalizeMealSchedule } from "@/lib/mealSchedule";
+import { resolveMealTimezone } from "@/lib/mealReminderTimezone";
 import { syncCarePairMember } from "@/lib/carePairFirestore";
 
 export type { CareMemberRole };
@@ -24,6 +25,7 @@ export type CarePairProfile = {
   breakfastTime: string;
   lunchTime: string;
   dinnerTime: string;
+  timezone: string;
   members: { role: CareMemberRole; email: string }[];
   linkedUser: boolean;
   linkedCaregiver: boolean;
@@ -110,6 +112,7 @@ export function carePairToProfile(
     careRecipientName: pair.careRecipientName,
     caregiverName: pair.caregiverName,
     ...schedule,
+    timezone: resolveMealTimezone(pair.timezone),
     members,
     linkedUser: members.some((m) => m.role === "user"),
     linkedCaregiver: members.some((m) => m.role === "caregiver"),
@@ -126,6 +129,7 @@ export async function createCarePairForCaregiver(
     breakfastTime?: string;
     lunchTime?: string;
     dinnerTime?: string;
+    timezone?: string;
   },
 ): Promise<CarePairProfile> {
   const existing = await findMember(firebaseUid);
@@ -154,6 +158,7 @@ export async function createCarePairForCaregiver(
       data: {
         careRecipientName: opts.careRecipientName,
         caregiverName: opts.caregiverName,
+        timezone: resolveMealTimezone(opts.timezone),
         ...schedule,
       },
     });
@@ -183,6 +188,7 @@ export async function updateCarePairProfile(
     breakfastTime?: string;
     lunchTime?: string;
     dinnerTime?: string;
+    timezone?: string;
   },
 ): Promise<CarePairProfile> {
   const ctx = await getCareContext(firebaseUid);
@@ -205,6 +211,9 @@ export async function updateCarePairProfile(
           : {}),
         ...(data.caregiverName != null ? { caregiverName: data.caregiverName } : {}),
         ...schedule,
+        ...(data.timezone != null
+          ? { timezone: resolveMealTimezone(data.timezone) }
+          : {}),
       },
     }),
   );

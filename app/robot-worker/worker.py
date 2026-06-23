@@ -29,9 +29,12 @@ from robot_stats import (
     after_successful_feed,
     mark_jetson_online,
     record_failed_feed,
+    record_hardware_emergency,
+    read_live_phase,
     reset_meal_session,
     set_live_state,
 )
+from emergency_notify import notify_app_backend_emergency
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("care-robot-worker")
@@ -148,8 +151,26 @@ def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) ->
 
 
 def handle_gpio_estop(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
-    reset_meal_session(db, rid, emergency=True)
-    logger.warning("GPIO e-stop pressed")
+    """Physical e-stop: STOP arm first, then Firestore, then caregiver push."""
+    reason = "EMERGENCY_BUTTON"
+    phase = read_live_phase(db, rid)
+
+    logger.warning("GPIO e-stop pressed (pin %s, phase=%s)", buttons.estop_pin, phase)
+
+    try:
+        execute_command("stop", None)
+    except Exception:
+        logger.exception("GPIO e-stop: arm STOP failed")
+
+    try:
+        record_hardware_emergency(db, rid, reason=reason, phase=phase, pin=buttons.estop_pin)
+    except Exception:
+        logger.exception("GPIO e-stop: Firestore update failed")
+
+    try:
+        notify_app_backend_emergency(robot_id=rid, reason=reason, phase=phase)
+    except Exception:
+        logger.exception("GPIO e-stop: app backend notify failed")
 
 
 def _change_is_added_or_modified(change: Any) -> bool:

@@ -57,6 +57,7 @@ export async function POST(request: NextRequest) {
       breakfastTime?: string;
       lunchTime?: string;
       dinnerTime?: string;
+      timezone?: string;
     } = {};
     try {
       body = (await request.json()) as typeof body;
@@ -75,6 +76,7 @@ export async function POST(request: NextRequest) {
       ? await updateCarePairProfile(ctx.uid, {
           careRecipientName,
           caregiverName,
+          timezone: body.timezone,
           ...schedule,
         })
       : await createCarePairForCaregiver(ctx.uid, {
@@ -82,6 +84,7 @@ export async function POST(request: NextRequest) {
           displayName: ctx.name ?? caregiverName,
           careRecipientName,
           caregiverName,
+          timezone: body.timezone,
           ...schedule,
         });
 
@@ -100,6 +103,7 @@ export async function PATCH(request: NextRequest) {
       dinnerTime?: string;
       careRecipientName?: string;
       caregiverName?: string;
+      timezone?: string;
     } = {};
     try {
       body = (await request.json()) as typeof body;
@@ -116,6 +120,7 @@ export async function PATCH(request: NextRequest) {
     const profile = await updateCarePairProfile(ctx.uid, {
       ...(body.careRecipientName?.trim() ? { careRecipientName: body.careRecipientName.trim() } : {}),
       ...(body.caregiverName?.trim() ? { caregiverName: body.caregiverName.trim() } : {}),
+      ...(body.timezone?.trim() ? { timezone: body.timezone.trim() } : {}),
       ...schedule,
     });
 
