@@ -1,414 +1,446 @@
 #!/usr/bin/env python3
-"""
-pi_arm_server.py  —  Runs on Raspberry Pi (MyCobot 320 Pi)
--------------------------------------------------------------------
-Updated version of your Pi arm server.
 
-Main improvement:
-- Keeps your existing text command protocol.
-- Adds XZ_DELTA <dx_mm> <dz_mm>, so Jetson can send one proportional
-  correction for mouth-centering instead of separate LEFT/RIGHT/UP/DOWN
-  fixed nudges.
-
-Socket protocol  (received from Jetson):
-  PING                  -> ACK
-  GET_COORDS            -> COORDS x y z rx ry rz
-  LEFT <mm>             -> nudge arm left  (robot -X)
-  RIGHT <mm>            -> nudge arm right (robot +X)
-  UP <mm>               -> nudge arm up    (robot +Z)
-  DOWN <mm>             -> nudge arm down  (robot -Z)
-  XZ_DELTA <dx> <dz>    -> nudge robot X/Z together
-  VIEW_SELECTION          -> move to plate / AprilTag view
-  VIEW_MOUTH              -> move to mouth / feeding view
-  SECTION_PICK <n>        -> pick food from plate section 1-4
-  MOVE_COORDS x y z rx ry rz [speed] -> absolute pose
-  FEED                  -> execute one forward feeding step
-  FEED_PAUSE            -> freeze the arm mid-approach
-  FEED_RESUME           -> alias for FEED
-  STOP                  -> stop all motion immediately
-
-Coordinate convention used by this file:
-  +X = robot's right
-  +Y = forward toward user
-  +Z = up
-
-Safety:
-- XZ_DELTA is clamped to small max step sizes.
-- Feed only changes Y.
-- Orientation rx/ry/rz is preserved from current coords.
-"""
-
+import json
 import socket
 import time
-import traceback
-from pymycobot import MyCobot320
 
-# Hardware
+from pymycobot.mycobot320 import MyCobot320
+
+
 SERIAL_PORT = "/dev/ttyAMA0"
 BAUD_RATE = 115200
 
-# Server
 HOST = "0.0.0.0"
-PORT = 5001
+PORT = 5002
 
-# Motion parameters
-NUDGE_SPEED = 12
-FEED_SPEED = 10
-NUDGE_SETTLE = 0.15
+# Startup is a JOINT-ANGLE move, not a coordinate move.
+STARTUP_ANGLES = [0, 0, 0, 0, 0, 0]
+STARTUP_SPEED = 20
+
+# View transitions use send_coords with angular coordinate transition mode.
 VIEW_SPEED = 5
+VIEW_MODE = 0
 
-FEED_STEP_MM = 5
-FEED_STEP_DELAY = 0.4
+# Mouth tracking corrections use send_coords with linear coordinate mode.
+TRACK_SPEED = 50
+TRACK_MODE = 1
 
-# Preset poses (from arm_server_combined.py — tune on your hardware).
-SELECTION_VIEW = [116.3, -75.8, 352.0, -178.81, -1.19, -88.61]
+# Known working views.
 MOUTH_VIEW = [141.1, 180.1, 414.0, -97.87, 1.06, 5.52]
+SELECTION_VIEW = [279.8, -90.3, 323.0, -162.44, 3.64, -96.64]
 
-# Per-section mm offsets from SELECTION_VIEW for plate pickup (tune after AprilTag scan).
-SECTION_OFFSETS_MM = {
-    1: (0.0, 0.0, 0.0),
-    2: (20.0, 10.0, 0.0),
-    3: (20.0, 20.0, 0.0),
-    4: (0.0, 20.0, 0.0),
+# X/Z mouth alignment correction.
+STEP = 2
+
+LIMITS = {
+    "x": (21.3, 204.1),
+    "z": (334.0, 457.0),
 }
-PICK_DIP_Z_MM = -25.0
-PICK_SCOOP_Y_MM = 12.0
 
-# Safety workspace clamps. Adjust after testing your actual safe feeding zone.
-X_MIN = -250.0
-X_MAX = 250.0
-Y_MIN = 100.0
-Y_MAX = 350.0
-Z_MIN = 100.0
-Z_MAX = 450.0
+# Final forward-to-mouth approach.
+APPROACH_STEP_Y = 2.0
+APPROACH_SPEED = 5
+APPROACH_MODE = 0
 
-# Max correction accepted from Jetson per command.
-MAX_X_STEP_MM = 5.0
-MAX_Z_STEP_MM = 5.0
+# You said +1 moved accurately. Keep +1 unless it reverses after remounting.
+APPROACH_Y_DIRECTION = +1
 
-# Safety: do not let Y go beyond this during feed.
-FEED_Y_MAX = 350.0
+# Keep Y physically bounded.
+Y_LIMITS = (180.0, 330.0)
 
 
-def clamp(value, low, high):
-    return max(low, min(high, value))
 
+# ---------------------------------------------------------
+# Scoop trajectories for the four plate sections
+# ---------------------------------------------------------
+# Each item is: (coords, speed, mode, wait_seconds)
+# mode 0 = angular coordinate transition mode, matching your working scoop tests.
+# Edit these lists if your final physical scoop paths change.
+SCOOP_TRAJECTORIES = {
+    1: [
+        ([14, -154.5, 523.3, -90.12, -2.81, -179.11], 20, 0, 4),
+        ([272.5,(-122),187.4,178.15,(-41.48),(-42.16)], 10, 0, 4),
+        ([259.4,(-134),172.5,(-150.81),(-9.67),(-85.15)], 10, 0, 4),
+        ([269.7,(-135.6),203.8,(-130.07),(-13.99),(-89.39)], 10, 0, 4),
+        ([14, -154.5, 523.3, -90.12, -2.81, -179.11], 20, 0, 4),
+    ],
+    2: [
+        ([14, -154.5, 523.3, -90.12, -2.81, -179.11], 20, 0, 4),
+        ([264.9,(-39.5),188.5,(-170.87),31.49,(-142.47)], 10, 0, 4),
+        ([243.2,(-110.9),182.8,(-150.39),9.87,(-102.25)], 10, 0, 4),
+        ([245.9,(-108.2),205.2,(-130.34),11.22,(-98.09)], 10, 0, 4),
+        ([14, -154.5, 523.3, -90.12, -2.81, -179.11], 20, 0, 4),
+    ],
+    3: [
+        ([14, -154.5, 523.3, -90.12, -2.81, -179.11], 20, 0, 4),
+        ([345.1,(-78.4),173.7,(-174.76),(-44.79),(-21.09)], 10, 0, 4),
+        ([344.7,(-35.3),153.2,(-139.78),(-4.81),(-80.02)], 10, 0, 4),
+        ([330.2,(-55.2),195.9,(-116.92),1.38,(-84.89)], 10, 0, 4),
+        ([4.4, -154.3, 523.5, -89.86, 4.21, -178.76], 20, 0, 4),
+    ],
+    4: [
+        ([14, -154.5, 523.3, -90.12, -2.81, -179.11], 20, 0, 4),
+        ([350,(-103.8),185.9,(-169.94),(-39.48),(-58.32)], 10, 0, 4),
+        ([350,(-110),152,(-141.09),(-8.57),(-98.15)], 10, 0, 4),
+        ([337.5,(-109.4),212.4,(-108.4),(-3.56),(-101.71)], 10, 0, 4),
+        ([4.4, -154.3, 523.5, -89.86, 4.21, -178.76], 20, 0, 4),
+    ],
+}
 
-print("[ARM] Connecting to MyCobot 320...")
 mc = MyCobot320(SERIAL_PORT, BAUD_RATE)
-
-print("[ARM] Powering on...")
 mc.power_on()
-time.sleep(1)
-
-try:
-    print("[ARM] Setting fresh mode = 1")
-    mc.set_fresh_mode(1)
-except Exception as e:
-    print(f"[ARM] set_fresh_mode warning: {e}")
-
-try:
-    print("[ARM] Setting vision mode = 1")
-    mc.set_vision_mode(1)
-except Exception as e:
-    print(f"[ARM] set_vision_mode warning: {e}")
-
-print("[ARM] Ready.")
 
 
-def get_coords():
-    """Return current [x, y, z, rx, ry, rz] or None on failure."""
-    for _ in range(3):
-        coords = mc.get_coords()
-        if coords and len(coords) == 6:
-            return list(coords)
+current = {
+    "x": MOUTH_VIEW[0],
+    "y": MOUTH_VIEW[1],
+    "z": MOUTH_VIEW[2],
+    "rx": MOUTH_VIEW[3],
+    "ry": MOUTH_VIEW[4],
+    "rz": MOUTH_VIEW[5],
+}
+
+
+def clamp(val, min_v, max_v):
+    return max(min_v, min(val, max_v))
+
+
+def safe_stop(reason="STOP"):
+    """
+    Software stop for the myCobot.
+    This is not a physical power-cut emergency stop, but it immediately asks
+    the arm controller to stop motion.
+    """
+    print(f"[STOP] Stopping arm. Reason: {reason}", flush=True)
+
+    try:
+        mc.stop()
         time.sleep(0.1)
 
-    print("[ARM] Warning: could not read current coords.")
-    return None
-
-
-def safe_send_coords(coords, speed=NUDGE_SPEED, mode=1):
-    """Send coords after applying workspace clamps."""
-    coords = list(coords)
-    coords[0] = clamp(coords[0], X_MIN, X_MAX)
-    coords[1] = clamp(coords[1], Y_MIN, Y_MAX)
-    coords[2] = clamp(coords[2], Z_MIN, Z_MAX)
-
-    print(f"[ARM] send_coords speed={speed} mode={mode} -> "
-          f"{[round(c, 1) for c in coords]}")
-    mc.send_coords(coords, speed, mode)
-
-
-def move_to_view(coords, label):
-    """Angular coordinate view transition (mode 0)."""
-    try:
+        # Return to non-continuous/fresh mode after stopping.
+        # This helps after mouth tracking enabled fresh/vision modes.
         mc.set_fresh_mode(0)
+        time.sleep(0.1)
+
     except Exception as e:
-        print(f"[ARM] set_fresh_mode warning: {e}")
-    time.sleep(0.2)
-    print(f"[ARM] Moving to {label}")
-    safe_send_coords(coords, VIEW_SPEED, mode=0)
-    time.sleep(4.0)
+        print("[STOP ERROR]", e, flush=True)
+
+
+def move_to_startup_position():
+    print("Setting fresh mode 0 before startup angle move...", flush=True)
+
+    mc.set_fresh_mode(0)
+    time.sleep(0.5)
+
+    print("Current angles before startup:", mc.get_angles(), flush=True)
+    print("Current coords before startup:", mc.get_coords(), flush=True)
+
+    print("Moving to startup all-zero joint angles...", flush=True)
+    print("Sending angles:", STARTUP_ANGLES, "speed:", STARTUP_SPEED, flush=True)
+
+    mc.send_angles(STARTUP_ANGLES, STARTUP_SPEED)
+
+    time.sleep(6)
+
+    print("Startup angles actual:", mc.get_angles(), flush=True)
+    print("Startup coords actual:", mc.get_coords(), flush=True)
 
 
 def move_to_selection_view():
-    move_to_view(SELECTION_VIEW, "selection / plate view")
+    print("Moving to selection / AprilTag view using send_coords angular coordinate mode.", flush=True)
+
+    mc.set_fresh_mode(0)
+    time.sleep(0.2)
+
+    print("Sending coords:", SELECTION_VIEW, "speed:", VIEW_SPEED, "mode:", VIEW_MODE, flush=True)
+
+    mc.send_coords(SELECTION_VIEW, VIEW_SPEED, VIEW_MODE)
+
+    time.sleep(4)
+
+    print("Actual after selection view:", mc.get_coords(), flush=True)
 
 
 def move_to_mouth_view():
-    move_to_view(MOUTH_VIEW, "mouth / feeding view")
-    try:
-        mc.set_fresh_mode(1)
-        mc.set_vision_mode(1)
-    except Exception as e:
-        print(f"[ARM] vision mode warning: {e}")
-    print("[ARM] Vision tracking modes enabled.")
+    global current
+
+    print("Moving to mouth / feeding view using send_coords angular coordinate mode.", flush=True)
+
+    mc.set_fresh_mode(0)
+    time.sleep(0.2)
+
+    print("Sending coords:", MOUTH_VIEW, "speed:", VIEW_SPEED, "mode:", VIEW_MODE, flush=True)
+
+    mc.send_coords(MOUTH_VIEW, VIEW_SPEED, VIEW_MODE)
+
+    time.sleep(4)
+
+    actual = mc.get_coords()
+
+    print("Actual after mouth view:", actual, flush=True)
+
+    current = {
+        "x": MOUTH_VIEW[0],
+        "y": MOUTH_VIEW[1],
+        "z": MOUTH_VIEW[2],
+        "rx": MOUTH_VIEW[3],
+        "ry": MOUTH_VIEW[4],
+        "rz": MOUTH_VIEW[5],
+    }
+
+    mc.set_fresh_mode(1)
+    mc.set_vision_mode(1)
+
+    print("Vision tracking modes enabled for linear mouth alignment.", flush=True)
 
 
-def section_pick(section_num):
-    """Move to a plate section, dip, scoop, and lift."""
-    section = int(section_num)
-    if section not in SECTION_OFFSETS_MM:
-        return f"ERROR: invalid section {section}"
+def send_current_coords(speed, mode, label):
+    next_coords = [
+        current["x"],
+        current["y"],
+        current["z"],
+        current["rx"],
+        current["ry"],
+        current["rz"],
+    ]
 
-    ox, oy, oz = SECTION_OFFSETS_MM[section]
-    base = list(SELECTION_VIEW)
-    base[0] += ox
-    base[1] += oy
-    base[2] += oz
+    print(f"{label}: {next_coords} speed={speed} mode={mode}", flush=True)
 
-    move_to_selection_view()
-
-    coords = list(base)
-    print(f"[ARM] SECTION_PICK {section} approach -> {coords}")
-    safe_send_coords(coords, NUDGE_SPEED, mode=1)
-    time.sleep(NUDGE_SETTLE)
-
-    dip = list(coords)
-    dip[2] += PICK_DIP_Z_MM
-    print(f"[ARM] SECTION_PICK {section} dip z={PICK_DIP_Z_MM}")
-    safe_send_coords(dip, NUDGE_SPEED, mode=1)
-    time.sleep(NUDGE_SETTLE)
-
-    scoop = list(dip)
-    scoop[1] += PICK_SCOOP_Y_MM
-    print(f"[ARM] SECTION_PICK {section} scoop y={PICK_SCOOP_Y_MM}")
-    safe_send_coords(scoop, FEED_SPEED, mode=1)
-    time.sleep(FEED_STEP_DELAY)
-
-    lift = list(scoop)
-    lift[2] = coords[2]
-    print(f"[ARM] SECTION_PICK {section} lift")
-    safe_send_coords(lift, NUDGE_SPEED, mode=1)
-    time.sleep(NUDGE_SETTLE)
-
-    return f"ACK SECTION_PICK {section}"
+    mc.send_coords(next_coords, speed, mode)
 
 
-def nudge(axis, delta_mm):
-    """Move relative to current position. axis: 0=X, 1=Y, 2=Z."""
-    coords = get_coords()
-    if coords is None:
-        print("[ARM] Nudge skipped — could not read coords.")
+def apply_move(cmd):
+    global current
+
+    if cmd == "MOVE_LEFT":
+        current["x"] -= STEP
+
+    elif cmd == "MOVE_RIGHT":
+        current["x"] += STEP
+
+    elif cmd == "MOVE_FORWARD":
+        current["z"] += STEP
+
+    elif cmd == "MOVE_BACKWARD":
+        current["z"] -= STEP
+
+    else:
         return
 
-    coords[axis] += delta_mm
-    print(f"[ARM] Nudge axis={axis} delta={delta_mm:+.2f}mm")
-    safe_send_coords(coords, NUDGE_SPEED, mode=1)
-    time.sleep(NUDGE_SETTLE)
+    current["x"] = clamp(current["x"], *LIMITS["x"])
+    current["z"] = clamp(current["z"], *LIMITS["z"])
+
+    send_current_coords(TRACK_SPEED, TRACK_MODE, f"Linear tracking correction {cmd}")
 
 
-def xz_delta(dx_mm, dz_mm):
-    """Combined mouth-centering correction. Only changes X and Z."""
-    dx_mm = clamp(float(dx_mm), -MAX_X_STEP_MM, MAX_X_STEP_MM)
-    dz_mm = clamp(float(dz_mm), -MAX_Z_STEP_MM, MAX_Z_STEP_MM)
+def process_alignment(error_x, error_y):
+    if abs(error_x) > 40:
+        if error_x > 0:
+            apply_move("MOVE_RIGHT")
+        else:
+            apply_move("MOVE_LEFT")
 
-    coords = get_coords()
-    if coords is None:
-        print("[ARM] XZ_DELTA skipped — could not read coords.")
-        return "ERROR: could not read coords"
-
-    coords[0] += dx_mm
-    coords[2] += dz_mm
-
-    print(f"[ARM] XZ_DELTA dx={dx_mm:+.2f} dz={dz_mm:+.2f}")
-    safe_send_coords(coords, NUDGE_SPEED, mode=1)
-    time.sleep(NUDGE_SETTLE)
-
-    return f"ACK XZ_DELTA {dx_mm:.2f} {dz_mm:.2f}"
+    if abs(error_y) > 40:
+        if error_y > 0:
+            apply_move("MOVE_BACKWARD")
+        else:
+            apply_move("MOVE_FORWARD")
 
 
-feed_paused = False
-feed_running = False
+def approach_mouth_step(tof_cm=None):
+    global current
+
+    old_y = current["y"]
+
+    current["y"] += APPROACH_Y_DIRECTION * APPROACH_STEP_Y
+    current["y"] = clamp(current["y"], *Y_LIMITS)
+
+    print(
+        f"Y mouth approach step | ToF={tof_cm} cm | Y {old_y:.1f} -> {current['y']:.1f}",
+        flush=True,
+    )
+
+    send_current_coords(APPROACH_SPEED, APPROACH_MODE, "Y mouth approach")
 
 
-def execute_feed():
-    """One small forward feeding step. Each FEED command advances +Y one step."""
-    global feed_paused, feed_running
 
-    if feed_paused:
-        print("[ARM] FEED received but feed is paused — ignoring.")
-        return "FEED PAUSED"
+def execute_scoop(section):
+    """
+    Execute the fixed scoop trajectory for the selected plate section.
 
-    coords = get_coords()
-    if coords is None:
-        return "ERROR: could not read coords"
+    The Jetson sends this before starting mouth detection. After this function
+    finishes, the arm is back at the safe upper transition pose, ready to move
+    into the mouth tracking view.
+    """
+    section = int(section)
 
-    if coords[1] >= FEED_Y_MAX:
-        print("[ARM] FEED_Y_MAX reached — stopping feed.")
-        feed_running = False
-        return "FEED COMPLETE"
+    if section not in SCOOP_TRAJECTORIES:
+        raise ValueError(f"Invalid scoop section {section}. Expected 1, 2, 3, or 4.")
 
-    coords[1] += FEED_STEP_MM
-    print(f"[ARM] FEED step -> Y={coords[1]:.1f}mm")
-    safe_send_coords(coords, FEED_SPEED, mode=1)
+    print(f"[SCOOP] Starting scoop for plate section {section}", flush=True)
 
-    time.sleep(FEED_STEP_DELAY)
-    feed_running = True
-    return "FEED STEP OK"
+    # Use the same mode setup as your standalone tested scoop scripts.
+    mc.set_fresh_mode(0)
+    time.sleep(0.2)
+
+    for step_index, (coords, speed, mode, wait_seconds) in enumerate(SCOOP_TRAJECTORIES[section], start=1):
+        print(
+            f"[SCOOP] Section {section} step {step_index}/{len(SCOOP_TRAJECTORIES[section])}: "
+            f"coords={coords} speed={speed} mode={mode}",
+            flush=True,
+        )
+        mc.send_coords(coords, speed, mode)
+        time.sleep(wait_seconds)
+
+    print(f"[SCOOP] Completed scoop for plate section {section}", flush=True)
+
+def send_json(conn, msg):
+    conn.sendall((json.dumps(msg) + "\n").encode())
 
 
-def handle_command(raw):
-    global feed_paused, feed_running
+def handle_client(conn, addr):
+    print(f"Connected: {addr}", flush=True)
 
-    parts = raw.strip().split()
-    if not parts:
-        return "EMPTY COMMAND"
+    buffer = ""
 
-    cmd = parts[0].upper()
+    while True:
+        data = conn.recv(1024)
 
-    try:
-        if cmd == "PING":
-            return "ACK"
+        if not data:
+            print("Client disconnected.", flush=True)
+            break
 
-        if cmd == "GET_COORDS":
-            coords = get_coords()
-            if coords is None:
-                return "ERROR: could not read coords"
-            return "COORDS " + " ".join(f"{c:.3f}" for c in coords)
+        buffer += data.decode()
 
-        if cmd == "LEFT":
-            mm = float(parts[1]) if len(parts) > 1 else 10.0
-            nudge(0, -mm)
-            return "ACK"
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            line = line.strip()
 
-        if cmd == "RIGHT":
-            mm = float(parts[1]) if len(parts) > 1 else 10.0
-            nudge(0, +mm)
-            return "ACK"
+            if not line:
+                continue
 
-        if cmd == "UP":
-            mm = float(parts[1]) if len(parts) > 1 else 10.0
-            nudge(2, +mm)
-            return "ACK"
+            try:
+                msg = json.loads(line)
+                cmd = msg.get("cmd")
 
-        if cmd == "DOWN":
-            mm = float(parts[1]) if len(parts) > 1 else 10.0
-            nudge(2, -mm)
-            return "ACK"
+                print(f"Received command: {cmd}", flush=True)
 
-        if cmd == "XZ_DELTA":
-            if len(parts) < 3:
-                return "ERROR: XZ_DELTA requires dx dz"
-            dx = float(parts[1])
-            dz = float(parts[2])
-            return xz_delta(dx, dz)
+                if cmd == "PING":
+                    send_json(conn, {
+                        "status": "ok",
+                        "reply": "PONG",
+                    })
 
-        if cmd == "VIEW_SELECTION":
-            move_to_selection_view()
-            return "ACK VIEW_SELECTION"
+                elif cmd == "VIEW_SELECTION":
+                    move_to_selection_view()
+                    send_json(conn, {
+                        "status": "ok",
+                        "reply": "VIEW_SELECTION_DONE",
+                    })
 
-        if cmd == "VIEW_MOUTH":
-            move_to_mouth_view()
-            return "ACK VIEW_MOUTH"
+                elif cmd == "VIEW_MOUTH":
+                    move_to_mouth_view()
+                    send_json(conn, {
+                        "status": "ok",
+                        "reply": "VIEW_MOUTH_DONE",
+                    })
 
-        if cmd == "SECTION_PICK":
-            if len(parts) < 2:
-                return "ERROR: SECTION_PICK requires section"
-            return section_pick(int(parts[1]))
+                elif cmd == "SCOOP":
+                    section = int(msg.get("section", 1))
+                    execute_scoop(section)
+                    send_json(conn, {
+                        "status": "ok",
+                        "reply": "SCOOP_DONE",
+                        "section": section,
+                    })
 
-        if cmd == "MOVE_COORDS":
-            if len(parts) < 7:
-                return "ERROR: MOVE_COORDS requires x y z rx ry rz"
-            coords = [float(parts[i]) for i in range(1, 7)]
-            speed = int(float(parts[7])) if len(parts) > 7 else NUDGE_SPEED
-            safe_send_coords(coords, speed, mode=1)
-            time.sleep(NUDGE_SETTLE)
-            return "ACK MOVE_COORDS"
+                elif cmd == "ALIGN":
+                    error_x = msg.get("error_x", 0)
+                    error_y = msg.get("error_y", 0)
 
-        if cmd == "FEED":
-            feed_paused = False
-            return execute_feed()
+                    process_alignment(error_x, error_y)
 
-        if cmd == "FEED_PAUSE":
-            feed_paused = True
-            feed_running = False
-            print("[ARM] Feed paused.")
-            mc.stop()
-            return "FEED PAUSED"
 
-        if cmd == "FEED_RESUME":
-            feed_paused = False
-            return execute_feed()
+                elif cmd == "CENTERED":
+                    print("Mouth centered - holding ready state", flush=True)
 
-        if cmd == "STOP":
-            feed_paused = True
-            feed_running = False
-            mc.stop()
-            print("[ARM] STOP received — all motion halted.")
-            return "STOPPED"
+                elif cmd == "APPROACH_MOUTH":
+                    tof_cm = msg.get("tof_cm", None)
 
-        print(f"[ARM] Unknown command: {raw!r}")
-        return "UNKNOWN COMMAND"
+                    approach_mouth_step(tof_cm)
 
-    except Exception as e:
-        print(f"[ARM] Command error for {raw!r}: {e}")
-        traceback.print_exc()
-        return f"ERROR: {e}"
+
+                elif cmd == "STOP":
+                    reason = msg.get("reason", "STOP")
+                    safe_stop(reason)
+
+                    send_json(conn, {
+                        "status": "ok",
+                        "reply": "STOPPED",
+                        "reason": reason,
+                    })
+
+                elif cmd == "HOME":
+                    reason = msg.get("reason", "HOME")
+                    print(f"HOME requested. Reason: {reason}", flush=True)
+
+                    safe_stop(reason)
+                    move_to_startup_position()
+
+                    send_json(conn, {
+                        "status": "ok",
+                        "reply": "HOME_DONE",
+                        "reason": reason,
+                    })
+
+                else:
+                    send_json(conn, {
+                        "status": "error",
+                        "reply": f"Unknown command: {cmd}",
+                    })
+
+            except Exception as e:
+                print("Parse/command error:", e, flush=True)
+
+                try:
+                    send_json(conn, {
+                        "status": "error",
+                        "reply": str(e),
+                    })
+                except Exception:
+                    pass
 
 
 def main():
+    move_to_startup_position()
+
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
     server.bind((HOST, PORT))
     server.listen(1)
 
-    print(f"[NET] Listening on {HOST}:{PORT} — waiting for Jetson...")
+    print(f"Pi server listening on {HOST}:{PORT}", flush=True)
 
-    while True:
-        conn, addr = server.accept()
-        print(f"[NET] Connected: {addr}")
+    try:
+        while True:
+            conn, addr = server.accept()
 
-        buffer = ""
+            try:
+                handle_client(conn, addr)
+            finally:
+                conn.close()
+
+    except KeyboardInterrupt:
+        print("\nStopping Pi server.", flush=True)
+
+    finally:
         try:
-            while True:
-                chunk = conn.recv(1024).decode()
-                if not chunk:
-                    print("[NET] Connection closed by Jetson.")
-                    break
+            safe_stop("PI_SERVER_SHUTDOWN")
+        except Exception:
+            pass
 
-                buffer += chunk
-
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
-
-                    if not line:
-                        continue
-
-                    print(f"[NET] RX: {line!r}")
-                    response = handle_command(line)
-                    conn.sendall((response + "\n").encode())
-                    print(f"[NET] TX: {response!r}")
-
-        except Exception as e:
-            print(f"[NET] Error: {e}")
-            traceback.print_exc()
-
-        finally:
-            conn.close()
-            print("[NET] Connection closed. Waiting for next connection...")
+        server.close()
 
 
 if __name__ == "__main__":

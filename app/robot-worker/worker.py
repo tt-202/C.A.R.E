@@ -25,6 +25,12 @@ from firebase_admin import credentials, firestore
 
 from gpio_buttons import ButtonManager, ButtonPoller
 from robot_motion import execute_command
+from robot_session import (
+    advance_selected_section,
+    get_selected_section,
+    is_apriltag_scan_done,
+    is_feeding_active,
+)
 from robot_stats import (
     after_successful_feed,
     mark_jetson_online,
@@ -45,6 +51,8 @@ ALLOWED = frozenset({"home", "next_bite", "pause", "stop", "calibrate_plate"})
 _ROOT = Path(__file__).resolve().parent
 _ENV_LOADED = False
 _active_buttons: ButtonManager | None = None
+_emergency_recovery_deadline: float | None = None
+EMERGENCY_RECOVERY_SECONDS = float(os.environ.get("EMERGENCY_RECOVERY_SECONDS", "10.0"))
 
 
 def _load_dotenv() -> None:
@@ -131,7 +139,14 @@ def handle_gpio_feed(db: firestore.Client, rid: str, buttons: ButtonManager) -> 
     if buttons.is_emergency_latched():
         logger.warning("GPIO feed ignored — emergency latched")
         return
-    section = current_section(db, rid)
+    if is_feeding_active():
+        logger.warning("GPIO feed ignored — feed cycle already active")
+        return
+    if not is_apriltag_scan_done():
+        logger.warning("GPIO feed blocked — run plate scan first (press SELECT/plate once)")
+        return
+
+    section = get_selected_section()
     try:
         execute_command("next_bite", {"sectionNum": section}, buttons=buttons)
         if not buttons.is_emergency_latched():
@@ -146,17 +161,54 @@ def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) ->
     if buttons.is_emergency_latched():
         logger.warning("GPIO plate ignored — emergency latched")
         return
-    section = (current_section(db, rid) % 4) + 1
-    set_live_state(db, rid, state="CALIBRATING", section=section, emergency=False)
-    logger.info("GPIO plate button → calibrate plate, next section %s", section)
+    if is_feeding_active():
+        logger.warning("GPIO plate ignored — feed cycle active")
+        return
+
     try:
-        execute_command("calibrate_plate", None, buttons=buttons)
-        set_live_state(db, rid, state="IDLE", section=section, emergency=False)
-        logger.info("Plate calibration done; active section %s", section)
+        if not is_apriltag_scan_done():
+            set_live_state(db, rid, state="CALIBRATING", section=get_selected_section(), emergency=False)
+            logger.info("GPIO plate button → AprilTag plate scan")
+            execute_command("calibrate_plate", None, buttons=buttons)
+            set_live_state(db, rid, state="IDLE", section=get_selected_section(), emergency=False)
+            logger.info("Plate scan done — FEED is now enabled")
+        else:
+            section = advance_selected_section()
+            set_live_state(db, rid, state="IDLE", section=section, emergency=False)
+            logger.info("GPIO plate button → selected section %s", section)
     except Exception:
-        logger.exception("Plate calibration failed")
+        logger.exception("GPIO plate / selection failed")
         record_failed_feed(db, rid)
-        set_live_state(db, rid, state="IDLE", section=section, emergency=False)
+        set_live_state(db, rid, state="IDLE", section=get_selected_section(), emergency=False)
+
+
+def handle_emergency_recovery(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
+    """After e-stop: wait, then HOME and clear latch (New_Settings_June26)."""
+    global _emergency_recovery_deadline
+
+    if not buttons.is_emergency_latched():
+        _emergency_recovery_deadline = None
+        return
+
+    now = time.time()
+    if _emergency_recovery_deadline is None:
+        _emergency_recovery_deadline = now + EMERGENCY_RECOVERY_SECONDS
+
+    if now < _emergency_recovery_deadline:
+        return
+
+    if buttons.estop_raw_pressed():
+        return
+
+    try:
+        execute_home("EMERGENCY_AUTO_RECOVERY")
+        buttons.clear_emergency_latch()
+        buttons.estop_reported = False
+        _emergency_recovery_deadline = None
+        set_live_state(db, rid, state="IDLE", section=get_selected_section(), emergency=False)
+        logger.info("Emergency recovery complete — arm homed, system ready")
+    except Exception:
+        logger.exception("Emergency recovery (HOME) failed")
 
 
 def handle_gpio_estop(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
@@ -224,7 +276,7 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
         )
         finish_command(ref, ok=True)
         if cmd == "next_bite":
-            section = 1
+            section = get_selected_section()
             if isinstance(payload, dict) and isinstance(payload.get("sectionNum"), int):
                 section = payload["sectionNum"]
             feed_pin = int(os.environ.get("GPIO_FEED_PIN", "37"))
@@ -302,6 +354,7 @@ def main() -> int:
                 ):
                     handle_gpio_estop(db, rid, buttons)
                 elif buttons.is_emergency_latched():
+                    handle_emergency_recovery(db, rid, buttons)
                     time.sleep(0.05)
                 elif buttons.feed_pressed():
                     handle_gpio_feed(db, rid, buttons)

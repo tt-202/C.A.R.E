@@ -1,13 +1,14 @@
 """
-Complete feeding cycle for Jetson + Pi arm server.
+Feeding cycle for Jetson + Pi JSON arm server (New_Settings_June26).
 
 One bite:
-  1. SECTION_PICK   — arm to plate section, dip/scoop/lift
-  2. VIEW_MOUTH     — move to feeding pose
-  3. Mouth tracking — align + ToF-guarded Y approach (With_Emergency_Stop logic)
-  4. VIEW_SELECTION — return to plate area for next bite
+  1. SCOOP          — fixed trajectory for selected plate section (Pi)
+  2. VIEW_MOUTH     — move to feeding pose (Pi)
+  3. Mouth tracking — ALIGN / CENTERED / APPROACH_MOUTH + ToF (Jetson + Pi)
+  4. BITE_HOLD      — hold still at mouth
+  5. HOME           — return to startup joint angles (Pi)
 
-Plate calibration (AprilTag + ToF) runs separately via calibrate_plate().
+Plate calibration: VIEW_SELECTION + AprilTag scan (SELECT button / calibrate_plate).
 """
 
 from __future__ import annotations
@@ -22,6 +23,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pi_arm_client import PiArmClient, wait_after_move
+from robot_session import (
+    end_feed_cycle,
+    get_selected_section,
+    is_feeding_active,
+    mark_apriltag_scan_done,
+    start_feed_cycle,
+)
 from tof_subprocess import read_tof_cm_safe, start_tof_reader, stop_tof_reader, use_fake_tof
 
 if TYPE_CHECKING:
@@ -35,29 +43,21 @@ CAMERA_ID = os.environ.get("CAMERA_ID", "/dev/video0")
 CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "480"))
 DEAD_ZONE_PX = int(os.environ.get("DEAD_ZONE_PX", "30"))
-MAX_STEP_MM = float(os.environ.get("MAX_STEP_MM", "5.0"))
 CENTER_HOLD_SECONDS = float(os.environ.get("CENTER_HOLD_SECONDS", "3.0"))
-STOP_DISTANCE_CM = float(os.environ.get("STOP_DISTANCE_CM", "5.0"))
+STOP_DISTANCE_CM = float(os.environ.get("STOP_DISTANCE_CM", "30.0"))
+BITE_HOLD_SECONDS = float(os.environ.get("BITE_HOLD_SECONDS", "5.0"))
 APPROACH_COMMAND_PERIOD = float(os.environ.get("APPROACH_COMMAND_PERIOD", "0.20"))
 MAX_APPROACH_SECONDS = float(os.environ.get("MAX_APPROACH_SECONDS", "6.0"))
 LOOP_DELAY = float(os.environ.get("LOOP_DELAY", "0.03"))
-INVERT_X = os.environ.get("INVERT_X", "false").lower() in ("1", "true", "yes")
-INVERT_Y = os.environ.get("INVERT_Y", "false").lower() in ("1", "true", "yes")
+SHOW_APRILTAG_PREVIEW = os.environ.get("SHOW_APRILTAG_PREVIEW", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 def _dry_run() -> bool:
     return os.environ.get("DRY_RUN", "true").lower() in ("1", "true", "yes")
-
-
-def clamp(value: float, low: float, high: float) -> float:
-    return max(low, min(value, high))
-
-
-def pixel_offset_to_mm(offset_px: float, dead_zone_px: float = DEAD_ZONE_PX, max_mm: float = MAX_STEP_MM) -> float:
-    if dead_zone_px <= 0:
-        return 0.0
-    mm = (offset_px / dead_zone_px) * max_mm
-    return clamp(mm, -max_mm, max_mm)
 
 
 def get_mouth_center(landmarks, w: int, h: int) -> tuple[int, int]:
@@ -86,62 +86,81 @@ def _estop_during_motion(buttons: ButtonManager | None, arm: PiArmClient, reason
     if buttons.estop_raw_pressed():
         buttons.latch_emergency(reason)
     if buttons.is_emergency_latched():
-        logger.warning("[ESTOP] %s — sending STOP to Pi", reason)
+        logger.warning("[ESTOP] %s — sending STOP", reason)
         try:
-            arm.stop()
+            arm.stop(reason)
         except Exception:
             logger.exception("Failed to send STOP during estop")
         return True
     return False
 
 
-def _align_toward_mouth(arm: PiArmClient, error_x: int, error_y: int) -> None:
-    ox, oy = error_x, error_y
-    if INVERT_X:
-        ox = -ox
-    if INVERT_Y:
-        oy = -oy
-    dx_mm = pixel_offset_to_mm(ox)
-    dz_mm = pixel_offset_to_mm(-oy)
-    if abs(dx_mm) < 0.05 and abs(dz_mm) < 0.05:
-        arm.feed_pause()
-        return
-    arm.xz_delta(dx_mm, dz_mm)
+def run_apriltag_selection_phase(arm: PiArmClient, *, preview: bool = False) -> bool:
+    """VIEW_SELECTION + AprilTag scan. Returns True on success."""
+    if _dry_run():
+        logger.info("DRY_RUN apriltag selection phase")
+        time.sleep(1.0)
+        mark_apriltag_scan_done()
+        return True
+
+    arm.view_selection()
+    wait_after_move(1.0)
+
+    script = ROOT_DIR / "run_apriltag_scan.py"
+    if not script.exists():
+        raise RuntimeError(f"Missing {script}")
+
+    cmd = [sys.executable, str(script)]
+    if preview or SHOW_APRILTAG_PREVIEW:
+        cmd.append("--preview")
+
+    logger.info("Starting AprilTag scan: %s", " ".join(cmd))
+    result = subprocess.run(cmd, cwd=str(ROOT_DIR), check=False)
+    if result.returncode != 0:
+        logger.error("AprilTag scan failed (exit %s)", result.returncode)
+        return False
+
+    mark_apriltag_scan_done()
+    logger.info("AprilTag scan completed for this run")
+    return True
 
 
 def calibrate_plate(*, preview: bool = False) -> dict:
     if _dry_run():
         logger.info("DRY_RUN calibrate_plate")
         time.sleep(1.0)
+        mark_apriltag_scan_done()
         return {"plate_center": (320, 240), "plate_z_cm": 25.0}
 
-    script = ROOT_DIR / "run_apriltag_scan.py"
-    cmd = [sys.executable, str(script)]
-    if preview:
-        cmd.append("--preview")
-    logger.info("Starting plate calibration: %s", " ".join(cmd))
-    result = subprocess.run(cmd, cwd=str(ROOT_DIR), check=False)
-    if result.returncode != 0:
-        raise RuntimeError(f"Plate calibration failed (exit {result.returncode})")
+    with PiArmClient() as arm:
+        arm.ping()
+        ok = run_apriltag_selection_phase(arm, preview=preview)
+    if not ok:
+        raise RuntimeError("Plate calibration / AprilTag scan failed")
 
     plate = _load_plate_scan_module()
-    if plate is None:
-        raise RuntimeError("Plate calibration finished but latest_plate_scan.py is missing")
+    if plate is None and not _dry_run():
+        raise RuntimeError("Scan finished but latest_plate_scan.py is missing")
     return {
-        "plate_center": getattr(plate, "PLATE_CENTER", None),
-        "plate_z_cm": getattr(plate, "PLATE_Z_CM", None),
+        "plate_center": getattr(plate, "PLATE_CENTER", (320, 240)) if plate else (320, 240),
+        "plate_z_cm": getattr(plate, "PLATE_Z_CM", 25.0) if plate else 25.0,
     }
 
 
-def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = None) -> None:
+def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = None) -> bool:
     """
-    MediaPipe mouth tracking + ToF-guarded approach.
-    Ported from With_Emergency_Stop/main_controller_phase4.py.
+    Mouth tracking + ToF approach + bite hold + HOME.
+    Returns True if bite completed and arm homed successfully.
     """
     if _dry_run():
-        logger.info("DRY_RUN mouth_feed_session (center %.1fs, ToF stop %.1f cm)", CENTER_HOLD_SECONDS, STOP_DISTANCE_CM)
+        logger.info(
+            "DRY_RUN mouth_feed_session (hold=%.1fs, stop=%.1fcm, bite_hold=%.1fs)",
+            CENTER_HOLD_SECONDS,
+            STOP_DISTANCE_CM,
+            BITE_HOLD_SECONDS,
+        )
         time.sleep(2.0)
-        return
+        return True
 
     import cv2
     import mediapipe as mp
@@ -150,15 +169,17 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
         buttons.clear_emergency_latch()
         if buttons.estop_raw_pressed():
             buttons.latch_emergency("EMERGENCY_BEFORE_MOUTH_TRACKING")
-            arm.stop()
-            return
+            arm.stop("EMERGENCY_BEFORE_MOUTH_TRACKING")
+            return False
         buttons.wait_for_feed_release()
+
+    arm.view_mouth()
+    wait_after_move(1.0)
 
     if not use_fake_tof():
         start_tof_reader()
 
-    mp_face = mp.solutions.face_mesh
-    face_mesh = mp_face.FaceMesh(
+    face_mesh = mp.solutions.face_mesh.FaceMesh(
         static_image_mode=False,
         max_num_faces=1,
         refine_landmarks=True,
@@ -177,13 +198,14 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
     approach_start_time: float | None = None
     last_approach_command_time = 0.0
     last_valid_tof_cm: float | None = None
+    feeding_completed_and_homed = False
     deadline = time.time() + float(os.environ.get("MOUTH_SESSION_TIMEOUT", "90"))
 
     logger.info(
-        "Mouth tracking started (hold=%.1fs, stop_dist=%.1fcm, fake_tof=%s)",
+        "Mouth tracking (hold=%.1fs, stop=%.1fcm, bite_hold=%.1fs)",
         CENTER_HOLD_SECONDS,
         STOP_DISTANCE_CM,
-        use_fake_tof(),
+        BITE_HOLD_SECONDS,
     )
 
     try:
@@ -193,11 +215,13 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
             if _estop_during_motion(buttons, arm, "EMERGENCY_BUTTON_MOUTH_TRACKING"):
                 break
 
-            if buttons is not None and buttons.feed_raw_pressed():
-                logger.info("[FEED] Feed pressed again — exiting mouth tracking")
-                arm.stop()
-                time.sleep(0.5)
+            if buttons is not None and buttons.is_emergency_latched():
+                arm.stop("EMERGENCY_LATCHED")
                 break
+
+            if buttons is not None and buttons.feed_raw_pressed():
+                logger.info("[FEED] Ignored during active feed cycle")
+                buttons.wait_for_feed_release(timeout=0.5)
 
             tof_reading = read_tof_cm_safe()
             if tof_reading is not None:
@@ -210,8 +234,7 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
 
             frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
             h, w, _ = frame.shape
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = face_mesh.process(rgb)
+            results = face_mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
             if results.multi_face_landmarks:
                 landmarks = results.multi_face_landmarks[0].landmark
@@ -225,24 +248,24 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                     if center_start_time is None:
                         center_start_time = now
                     centered_duration = now - center_start_time
-                    arm.feed_pause()
+                    arm.centered()
 
                     if centered_duration >= CENTER_HOLD_SECONDS and not approach_active:
-                        logger.info("[MOUTH] Centered %.1fs — guarded Y approach allowed", centered_duration)
+                        logger.info("[MOUTH] Centered %.1fs — approach allowed", centered_duration)
                         approach_active = True
                         approach_start_time = now
                         last_approach_command_time = 0.0
                 else:
                     center_start_time = None
                     if approach_active:
-                        logger.info("[APPROACH] Mouth left center — stopping approach")
-                        arm.stop()
+                        logger.info("[APPROACH] Mouth left center — stopping")
+                        arm.stop("MOUTH_NOT_CENTERED")
                     approach_active = False
                     approach_start_time = None
 
                     if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_ALIGN"):
                         break
-                    _align_toward_mouth(arm, error_x, error_y)
+                    arm.align(float(error_x), float(error_y))
 
                 if approach_active:
                     if _estop_during_motion(buttons, arm, "EMERGENCY_DURING_APPROACH"):
@@ -253,8 +276,8 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                         approach_start_time = now
 
                     if now - approach_start_time > MAX_APPROACH_SECONDS:
-                        logger.info("[APPROACH] Max approach time reached — stopping")
-                        arm.stop()
+                        logger.info("[APPROACH] Timeout — stopping")
+                        arm.stop("APPROACH_TIMEOUT")
                         approach_active = False
 
                     elif now - last_approach_command_time >= APPROACH_COMMAND_PERIOD:
@@ -265,31 +288,40 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                             break
 
                         if tof_cm is None:
-                            logger.info("[APPROACH] No valid ToF yet — holding")
-                            arm.feed_pause()
+                            arm.centered()
                             last_approach_command_time = now
 
                         elif tof_cm <= STOP_DISTANCE_CM:
                             logger.info(
-                                "[APPROACH] Stop distance reached: %.1f cm <= %.1f cm",
+                                "[APPROACH] Stop distance %.1f cm — holding %.1fs for bite",
                                 tof_cm,
-                                STOP_DISTANCE_CM,
+                                BITE_HOLD_SECONDS,
                             )
                             approach_active = False
-                            arm.feed_pause()
+                            arm.centered()
+
+                            hold_start = time.time()
+                            while time.time() - hold_start < BITE_HOLD_SECONDS:
+                                if _estop_during_motion(buttons, arm, "EMERGENCY_DURING_BITE_HOLD"):
+                                    break
+                                arm.centered()
+                                time.sleep(0.2)
+
+                            if buttons is not None and buttons.is_emergency_latched():
+                                break
+
+                            arm.home("FEED_COMPLETE_RETURN_HOME")
+                            feeding_completed_and_homed = True
+                            break
 
                         else:
-                            logger.info(
-                                "[APPROACH] ToF=%.1f cm > %.1f cm — FEED step",
-                                tof_cm,
-                                STOP_DISTANCE_CM,
-                            )
-                            arm.feed()
+                            logger.info("[APPROACH] ToF=%.1f cm — APPROACH_MOUTH", tof_cm)
+                            arm.approach_mouth(tof_cm)
                             last_approach_command_time = now
             else:
                 if approach_active:
-                    logger.info("[APPROACH] Face lost — stopping approach")
-                    arm.stop()
+                    logger.info("[APPROACH] Face lost — stopping")
+                    arm.stop("FACE_LOST")
                 center_start_time = None
                 approach_active = False
                 approach_start_time = None
@@ -297,85 +329,94 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
             time.sleep(LOOP_DELAY)
 
     finally:
-        try:
-            arm.stop()
-        except Exception:
-            pass
+        if not feeding_completed_and_homed:
+            arm.stop("MOUTH_TRACKING_PHASE_ENDED")
+            if buttons is None or not buttons.is_emergency_latched():
+                try:
+                    arm.home("FEED_PHASE_ENDED_RETURN_HOME")
+                    feeding_completed_and_homed = True
+                except Exception:
+                    logger.exception("Home return failed after mouth phase ended")
+
         cap.release()
         cv2.destroyAllWindows()
         face_mesh.close()
         stop_tof_reader()
-        logger.info("Mouth tracking phase ended")
+        logger.info("Mouth tracking phase ended (homed=%s)", feeding_completed_and_homed)
+
+    return feeding_completed_and_homed
 
 
-def execute_next_bite(section_num: int = 1, buttons: ButtonManager | None = None) -> None:
-    section = int(section_num)
-    if section < 1 or section > 4:
-        raise ValueError(f"section must be 1-4, got {section}")
-
+def execute_next_bite(section_num: int | None = None, buttons: ButtonManager | None = None) -> None:
     if buttons is not None and buttons.is_emergency_latched():
         logger.warning("Skipping bite — emergency latched")
         return
 
+    section = int(section_num if section_num is not None else get_selected_section())
+    if section < 1 or section > 4:
+        raise ValueError(f"section must be 1-4, got {section}")
+
+    start_feed_cycle(section)
     logger.info("=== BITE START section=%s ===", section)
 
     if _dry_run():
-        logger.info("DRY_RUN next_bite: SECTION_PICK → VIEW_MOUTH → mouth track → VIEW_SELECTION")
+        logger.info("DRY_RUN next_bite: SCOOP → VIEW_MOUTH → mouth track → HOME")
         time.sleep(2.0)
+        end_feed_cycle()
         logger.info("=== BITE DONE (dry run) ===")
         return
 
-    with PiArmClient() as arm:
-        reply = arm.ping()
-        logger.info("Pi ping: %s", reply)
+    homed = False
+    try:
+        with PiArmClient() as arm:
+            logger.info("Pi ping: %s", arm.ping())
 
-        if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_SECTION_PICK"):
-            return
+            if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_SCOOP"):
+                return
 
-        logger.info("Step 1/4: pick food from plate section %s", section)
-        reply = arm.section_pick(section)
-        logger.info("Pi: %s", reply)
-        if reply.startswith("ERROR"):
-            raise RuntimeError(reply)
-        wait_after_move()
+            logger.info("Step 1/3: SCOOP section %s", section)
+            arm.scoop(section)
 
-        if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_VIEW_MOUTH"):
-            return
+            if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_MOUTH"):
+                return
 
-        logger.info("Step 2/4: move to mouth view")
-        reply = arm.view_mouth()
-        logger.info("Pi: %s", reply)
-        wait_after_move(3.0)
+            logger.info("Step 2/3: mouth tracking + ToF approach")
+            homed = run_mouth_feed_session(arm, buttons)
 
-        if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_MOUTH_SESSION"):
-            return
+            if buttons is not None and buttons.is_emergency_latched():
+                logger.warning("=== BITE ABORTED (emergency) section=%s ===", section)
+                return
 
-        logger.info("Step 3/4: mouth tracking + ToF approach")
-        run_mouth_feed_session(arm, buttons)
-
-        if buttons is not None and buttons.is_emergency_latched():
-            logger.warning("=== BITE ABORTED (emergency) section=%s ===", section)
-            return
-
-        logger.info("Step 4/4: return to plate view")
-        reply = arm.view_selection()
-        logger.info("Pi: %s", reply)
-        wait_after_move()
+    except Exception:
+        logger.exception("Bite failed for section %s", section)
+        try:
+            with PiArmClient() as arm:
+                arm.stop("BITE_ERROR")
+                if buttons is None or not buttons.is_emergency_latched():
+                    arm.home("BITE_ERROR_RETURN_HOME")
+                    homed = True
+        except Exception:
+            logger.exception("Error recovery failed")
+        raise
+    finally:
+        if homed:
+            end_feed_cycle()
 
     logger.info("=== BITE DONE section=%s ===", section)
 
 
-def execute_stop() -> None:
+def execute_stop(reason: str = "STOP") -> None:
     if _dry_run():
         logger.info("DRY_RUN stop")
         return
     with PiArmClient() as arm:
-        arm.stop()
+        arm.stop(reason)
 
 
-def execute_home() -> None:
+def execute_home(reason: str = "HOME") -> None:
     if _dry_run():
         logger.info("DRY_RUN home")
         return
     with PiArmClient() as arm:
-        arm.view_selection()
+        arm.home(reason)
+    end_feed_cycle()

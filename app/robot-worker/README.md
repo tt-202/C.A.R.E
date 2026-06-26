@@ -1,25 +1,31 @@
 # C.A.R.E robot worker (Jetson Orin Nano)
 
-Listens to **Firebase Firestore** for commands from the care-app and runs the **full feeding cycle** via TCP to `../pi-server/pi_arm_server.py`.
+Listens to **Firebase Firestore** for commands from the care-app and controls the arm via **JSON TCP** to `../pi-server/pi_arm_server.py` (port **5002**).
 
-Mouth tracking and e-stop behavior match `../With_Emergency_Stop/main_controller_phase4.py`.
+Movement logic matches `New_Settings_June26/main_controller_phase4.py` + `New_Settings_June26_raspberry/pi_arm_server.py`.
 
-## Files
+## Feed cycle (one bite)
 
-| File | Role |
-|------|------|
-| `worker.py` | Firestore listener + GPIO buttons |
-| `feeding_cycle.py` | Pick → mouth track (MediaPipe + ToF) → return |
-| `gpio_buttons.py` | BOARD pins 33/35/37 + emergency latch |
-| `tof_subprocess.py` | ToF reader (subprocess avoids GPIO/I2C conflict) |
-| `pi_arm_client.py` | TCP client to Pi |
-| `plate_calibration.py` | AprilTag plate scan |
+1. **SCOOP** — Pi runs fixed trajectory for selected plate section (1–4)
+2. **VIEW_MOUTH** — Pi moves to mouth tracking pose
+3. **Mouth tracking** — Jetson MediaPipe + ToF → Pi `ALIGN` / `CENTERED` / `APPROACH_MOUTH`
+4. **BITE_HOLD** — hold at mouth (`BITE_HOLD_SECONDS`)
+5. **HOME** — Pi returns to startup joint angles
+
+## GPIO buttons (BOARD numbering)
+
+| BOARD pin | Action |
+|-----------|--------|
+| 35 | **SELECT** — first press: AprilTag scan; later: cycle section 1→2→3→4 |
+| 37 | **FEED** — full bite (requires scan once per worker run) |
+| 33 | **E-stop** — STOP + Firestore emergency + caregiver push |
 
 ## Setup
 
 ```bash
 cd app/robot-worker
-python3 -m venv venv && source venv/bin/activate
+python3 -m venv venv --system-site-packages
+source venv/bin/activate
 pip install -r requirements.txt
 pip install opencv-python mediapipe pupil-apriltags adafruit-circuitpython-vl53l1x Jetson.GPIO
 cp .env.example .env
@@ -27,26 +33,9 @@ export $(grep -v '^#' .env | xargs)
 python worker.py
 ```
 
-Set `DRY_RUN=false` when Pi server and camera are ready.
+On Pi, run `app/pi-server/pi_arm_server.py` (listens on **5002**).
 
-## GPIO buttons (BOARD numbering)
-
-| BOARD pin | Action |
-|-----------|--------|
-| 35 | Plate / selection — AprilTag calibration |
-| 37 | Feed — full bite cycle |
-| 33 | **E-stop** — STOP arm + Firestore emergency + caregiver push |
-
-Set `GPIO_PIN_MODE=BCM` only if your wiring uses BCM numbers instead.
-
-## E-stop behavior
-
-1. Sends `STOP` to Pi immediately
-2. Sets `emergency_latched` — blocks feed/plate until worker restart
-3. Writes Firestore `live.emergency: true`
-4. POSTs to care-app `/api/robot/emergency` for caregiver push
-
-During mouth tracking, pin 33 is polled every loop iteration (highest priority).
+Set `DRY_RUN=false` on Jetson when Pi + camera are ready.
 
 ## Firestore commands
 
@@ -54,5 +43,5 @@ During mouth tracking, pin 33 is polled every loop iteration (highest priority).
 
 ## Tuning
 
-- `CENTER_HOLD_SECONDS`, `STOP_DISTANCE_CM`, `USE_FAKE_TOF` in `.env`
-- Arm poses in `../pi-server/pi_arm_server.py`
+- `STOP_DISTANCE_CM=30`, `BITE_HOLD_SECONDS=5`, `CENTER_HOLD_SECONDS=3` in `.env`
+- Scoop trajectories and poses in `app/pi-server/pi_arm_server.py`

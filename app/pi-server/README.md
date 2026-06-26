@@ -1,6 +1,8 @@
 # Pi arm server (MyCobot 320 Pi)
 
-TCP server that moves the MyCobot 320. The Jetson `robot-worker1` sends text commands over the network.
+JSON TCP server for the MyCobot 320. The Jetson `robot-worker` sends one JSON object per line.
+
+Based on `New_Settings_June26_raspberry/pi_arm_server.py`.
 
 ## Run on the Pi
 
@@ -10,17 +12,20 @@ pip3 install pymycobot
 python3 pi_arm_server.py
 ```
 
-Listens on port **5001**. Set `PI_IP` in `robot-worker1/.env` to this Pi's LAN address.
+Listens on port **5002**. Set `PI_IP` and `PI_PORT=5002` in `robot-worker/.env`.
 
-## Commands
+## JSON commands
 
-| Command | Action |
-|---------|--------|
-| `VIEW_SELECTION` | Look-down plate pose |
-| `VIEW_MOUTH` | Mouth / feeding pose |
-| `SECTION_PICK <1-4>` | Pick food from plate section |
-| `XZ_DELTA <dx> <dz>` | Mouth centering correction |
-| `FEED` | One forward step toward user |
-| `STOP` | Emergency stop |
+| cmd | Action |
+|-----|--------|
+| `PING` | Handshake |
+| `VIEW_SELECTION` | Plate / AprilTag view |
+| `VIEW_MOUTH` | Mouth tracking view |
+| `SCOOP` | Fixed scoop trajectory (`section` 1–4) |
+| `ALIGN` | X/Z mouth alignment (`error_x`, `error_y`) |
+| `CENTERED` | Hold ready state |
+| `APPROACH_MOUTH` | One Y step toward user (`tof_cm`) |
+| `STOP` | Stop motion |
+| `HOME` | Return to startup joint angles |
 
-Tune poses and section offsets at the top of `pi_arm_server.py`.
+Tune `SCOOP_TRAJECTORIES`, `MOUTH_VIEW`, and `SELECTION_VIEW` in `pi_arm_server.py`.
