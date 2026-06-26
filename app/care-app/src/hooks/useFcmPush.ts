@@ -4,7 +4,6 @@ import { useEffect, useRef } from "react";
 import { isFcmConfigured } from "@/lib/firebasePublicConfig";
 import { registerFcmTokenOnServer } from "@/lib/fcmRegisterApi";
 import { obtainFcmDeviceToken, subscribeToForegroundFcm } from "@/lib/firebaseMessagingClient";
-import { showBrowserNotification } from "@/hooks/useMealReminders";
 
 type Options = {
   enabled: boolean;
@@ -59,7 +58,6 @@ export function useFcmPush({
 
       unsubForeground = await subscribeToForegroundFcm((title, body, alertType) => {
         onForegroundRef.current?.({ title, body, alertType });
-        showBrowserNotification(title, body, `fcm-${Date.now()}`);
       });
     })();
 

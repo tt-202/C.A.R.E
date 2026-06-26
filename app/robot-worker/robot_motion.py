@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from feeding_cycle import (
     calibrate_plate,
@@ -12,12 +12,19 @@ from feeding_cycle import (
     execute_stop,
 )
 
+if TYPE_CHECKING:
+    from gpio_buttons import ButtonManager
+
 logger = logging.getLogger(__name__)
 
 ALLOWED = frozenset({"home", "next_bite", "pause", "stop", "calibrate_plate"})
 
 
-def execute_command(cmd: str, payload: dict[str, Any] | None) -> None:
+def execute_command(
+    cmd: str,
+    payload: dict[str, Any] | None,
+    buttons: ButtonManager | None = None,
+) -> None:
     if cmd not in ALLOWED:
         raise ValueError(f"unsupported cmd: {cmd}")
 
@@ -37,7 +44,7 @@ def execute_command(cmd: str, payload: dict[str, Any] | None) -> None:
         section = 1
         if isinstance(payload, dict) and isinstance(payload.get("sectionNum"), int):
             section = payload["sectionNum"]
-        execute_next_bite(section)
+        execute_next_bite(section, buttons=buttons)
         return
 
     raise ValueError(f"unhandled cmd: {cmd}")

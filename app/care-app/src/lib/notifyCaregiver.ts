@@ -1,5 +1,4 @@
 import {
-  broadcastCareAlertLocally,
   type CareAlertPayload,
   type MealDoneAlertPayload,
   type MealEmergencyAlertPayload,
@@ -41,7 +40,6 @@ async function postCareAlert(
       return { ok: false, error };
     }
     if (body.alert) {
-      broadcastCareAlertLocally(body.alert);
       return { ok: true, alert: body.alert };
     }
     return { ok: false, error: "No alert returned from server" };

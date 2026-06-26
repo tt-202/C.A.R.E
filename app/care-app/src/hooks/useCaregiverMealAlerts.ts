@@ -53,6 +53,7 @@ function saveLastSeen(uid: string, ms: number) {
 export function useCaregiverMealAlerts({ profileUid, enabled, getIdToken, onAlert }: Options) {
   const lastSeenRef = useRef(0);
   const onAlertRef = useRef(onAlert);
+  const firestoreLiveRef = useRef(false);
 
   useEffect(() => {
     onAlertRef.current = onAlert;
@@ -73,10 +74,13 @@ export function useCaregiverMealAlerts({ profileUid, enabled, getIdToken, onAler
       const { title, body } = formatCareAlertNotification(alert);
       const severity = alert.type === "meal_emergency" ? "emergency" : "success";
       onAlertRef.current?.({ title, body, finishedAtMs: alert.finishedAtMs, severity });
-      showBrowserNotification(title, body, careAlertNotificationTag(alert));
+      if (document.visibilityState !== "visible") {
+        showBrowserNotification(title, body, careAlertNotificationTag(alert));
+      }
     };
 
     const poll = async () => {
+      if (firestoreLiveRef.current) return;
       try {
         const token = await getIdToken();
         const since = lastSeenRef.current;
@@ -122,6 +126,7 @@ export function useCaregiverMealAlerts({ profileUid, enabled, getIdToken, onAler
     const attachFirestoreListener = () => {
       unsubFirestore?.();
       unsubFirestore = undefined;
+      firestoreLiveRef.current = false;
       if (!isFirebaseConfigured()) return;
 
       try {
@@ -133,12 +138,17 @@ export function useCaregiverMealAlerts({ profileUid, enabled, getIdToken, onAler
         unsubFirestore = onSnapshot(
           ref,
           (snap) => {
+            firestoreLiveRef.current = true;
             if (!snap.exists()) return;
             deliver(snap.data());
           },
-          (err) => console.warn("[caregiver alert] Firestore listen failed", err),
+          (err) => {
+            firestoreLiveRef.current = false;
+            console.warn("[caregiver alert] Firestore listen failed", err);
+          },
         );
       } catch (err) {
+        firestoreLiveRef.current = false;
         console.warn("[caregiver alert] Firestore setup failed", err);
       }
     };

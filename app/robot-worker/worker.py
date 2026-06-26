@@ -35,6 +35,7 @@ from robot_stats import (
     set_live_state,
 )
 from emergency_notify import notify_app_backend_emergency
+from estop_hooks import set_estop_callback
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("care-robot-worker")
@@ -43,6 +44,7 @@ ALLOWED = frozenset({"home", "next_bite", "pause", "stop", "calibrate_plate"})
 
 _ROOT = Path(__file__).resolve().parent
 _ENV_LOADED = False
+_active_buttons: ButtonManager | None = None
 
 
 def _load_dotenv() -> None:
@@ -126,22 +128,29 @@ def current_section(db: firestore.Client, rid: str) -> int:
 
 
 def handle_gpio_feed(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
+    if buttons.is_emergency_latched():
+        logger.warning("GPIO feed ignored — emergency latched")
+        return
     section = current_section(db, rid)
     try:
-        execute_command("next_bite", {"sectionNum": section})
-        after_successful_feed(db, rid, section, pin=buttons.feed_pin)
-        logger.info("GPIO feed button → bite section=%s", section)
+        execute_command("next_bite", {"sectionNum": section}, buttons=buttons)
+        if not buttons.is_emergency_latched():
+            after_successful_feed(db, rid, section, pin=buttons.feed_pin)
+            logger.info("GPIO feed button → bite section=%s", section)
     except Exception:
         logger.exception("GPIO feed failed")
         record_failed_feed(db, rid)
 
 
 def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
+    if buttons.is_emergency_latched():
+        logger.warning("GPIO plate ignored — emergency latched")
+        return
     section = (current_section(db, rid) % 4) + 1
     set_live_state(db, rid, state="CALIBRATING", section=section, emergency=False)
     logger.info("GPIO plate button → calibrate plate, next section %s", section)
     try:
-        execute_command("calibrate_plate", None)
+        execute_command("calibrate_plate", None, buttons=buttons)
         set_live_state(db, rid, state="IDLE", section=section, emergency=False)
         logger.info("Plate calibration done; active section %s", section)
     except Exception:
@@ -152,6 +161,10 @@ def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) ->
 
 def handle_gpio_estop(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
     """Physical e-stop: STOP arm first, then Firestore, then caregiver push."""
+    if buttons.estop_reported:
+        return
+    buttons.estop_reported = True
+    buttons.latch_emergency("EMERGENCY_BUTTON_MAIN_LOOP")
     reason = "EMERGENCY_BUTTON"
     phase = read_live_phase(db, rid)
 
@@ -204,13 +217,17 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
     payload = data.get("payload")
     rid = robot_id()
     try:
-        execute_command(str(cmd), payload if isinstance(payload, dict) else None)
+        execute_command(
+            str(cmd),
+            payload if isinstance(payload, dict) else None,
+            buttons=_active_buttons,
+        )
         finish_command(ref, ok=True)
         if cmd == "next_bite":
             section = 1
             if isinstance(payload, dict) and isinstance(payload.get("sectionNum"), int):
                 section = payload["sectionNum"]
-            feed_pin = int(os.environ.get("GPIO_FEED_PIN", "17"))
+            feed_pin = int(os.environ.get("GPIO_FEED_PIN", "37"))
             after_successful_feed(db, rid, section, pin=feed_pin)
         elif cmd == "stop":
             emergency = isinstance(payload, dict) and payload.get("emergency") is True
@@ -251,7 +268,10 @@ def main() -> int:
     rid = robot_id()
     mark_jetson_online(db, rid)
     buttons = ButtonManager()
+    global _active_buttons
+    _active_buttons = buttons
     buttons.setup()
+    set_estop_callback(lambda: handle_gpio_estop(db, rid, buttons))
     poller = ButtonPoller(buttons)
     poller.start()
     col = commands_col(db)
@@ -277,18 +297,23 @@ def main() -> int:
     try:
         while True:
             if buttons.enabled:
-                if buttons.feed_pressed():
+                if not buttons.estop_reported and (
+                    buttons.estop_pressed() or buttons.estop_raw_pressed()
+                ):
+                    handle_gpio_estop(db, rid, buttons)
+                elif buttons.is_emergency_latched():
+                    time.sleep(0.05)
+                elif buttons.feed_pressed():
                     handle_gpio_feed(db, rid, buttons)
                 elif buttons.plate_pressed():
                     handle_gpio_plate(db, rid, buttons)
-                elif buttons.estop_pressed():
-                    handle_gpio_estop(db, rid, buttons)
             time.sleep(0.05)
     except KeyboardInterrupt:
         logger.info("stopped")
     finally:
         poller.stop()
         buttons.cleanup()
+        set_estop_callback(None)
     return 0
 
 

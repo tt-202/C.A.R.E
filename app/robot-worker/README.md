@@ -2,22 +2,23 @@
 
 Listens to **Firebase Firestore** for commands from the care-app and runs the **full feeding cycle** via TCP to `../pi-server/pi_arm_server.py`.
 
+Mouth tracking and e-stop behavior match `../With_Emergency_Stop/main_controller_phase4.py`.
+
 ## Files
 
 | File | Role |
 |------|------|
 | `worker.py` | Firestore listener + GPIO buttons |
-| `robot_motion.py` | Command dispatch |
-| `feeding_cycle.py` | Pick → mouth track → feed → return |
+| `feeding_cycle.py` | Pick → mouth track (MediaPipe + ToF) → return |
+| `gpio_buttons.py` | BOARD pins 33/35/37 + emergency latch |
+| `tof_subprocess.py` | ToF reader (subprocess avoids GPIO/I2C conflict) |
 | `pi_arm_client.py` | TCP client to Pi |
 | `plate_calibration.py` | AprilTag plate scan |
-| `tof_sensor.py` | ToF distance for plate Z |
-| `run_apriltag_scan.py` | Plate scan CLI |
 
 ## Setup
 
 ```bash
-cd app/robot-worker1
+cd app/robot-worker
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 pip install opencv-python mediapipe pupil-apriltags adafruit-circuitpython-vl53l1x Jetson.GPIO
@@ -28,13 +29,24 @@ python worker.py
 
 Set `DRY_RUN=false` when Pi server and camera are ready.
 
-## GPIO buttons (BCM)
+## GPIO buttons (BOARD numbering)
 
-| Pin | Action |
-|-----|--------|
-| Feed (33) | One full bite cycle |
-| Plate (35) | AprilTag plate calibration |
-| E-stop (37) | Emergency stop + session reset |
+| BOARD pin | Action |
+|-----------|--------|
+| 35 | Plate / selection — AprilTag calibration |
+| 37 | Feed — full bite cycle |
+| 33 | **E-stop** — STOP arm + Firestore emergency + caregiver push |
+
+Set `GPIO_PIN_MODE=BCM` only if your wiring uses BCM numbers instead.
+
+## E-stop behavior
+
+1. Sends `STOP` to Pi immediately
+2. Sets `emergency_latched` — blocks feed/plate until worker restart
+3. Writes Firestore `live.emergency: true`
+4. POSTs to care-app `/api/robot/emergency` for caregiver push
+
+During mouth tracking, pin 33 is polled every loop iteration (highest priority).
 
 ## Firestore commands
 
@@ -42,5 +54,5 @@ Set `DRY_RUN=false` when Pi server and camera are ready.
 
 ## Tuning
 
-- `FEED_STEPS_PER_BITE`, `STABLE_SECONDS` in `.env`
+- `CENTER_HOLD_SECONDS`, `STOP_DISTANCE_CM`, `USE_FAKE_TOF` in `.env`
 - Arm poses in `../pi-server/pi_arm_server.py`

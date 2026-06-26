@@ -57,7 +57,10 @@ export async function GET(request: NextRequest) {
       dueSlotsNow += due.length;
 
       for (const slot of due) {
-        if (await wasReminderSent(pair.id, slot.fireKey)) {
+        const alreadySent = (
+          await Promise.all(caregiverUids.map((uid) => wasReminderSent(uid, slot.fireKey)))
+        ).some(Boolean);
+        if (alreadySent) {
           skipped += 1;
           continue;
         }
@@ -74,7 +77,9 @@ export async function GET(request: NextRequest) {
         });
 
         if (sent > 0) {
-          await markReminderSent(pair.id, slot.fireKey);
+          await Promise.all(
+            caregiverUids.map((uid) => markReminderSent(uid, slot.fireKey)),
+          );
           pushed += 1;
         }
       }

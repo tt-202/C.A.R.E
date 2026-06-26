@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getAuthContext } from "@/lib/authRequest";
 import { getCareContext, getMealScope, mealOwnershipWhere } from "@/lib/carePair";
 import { mealToHistoryEntry } from "@/lib/mealDto";
-import { publishAndPushCaregiverMealAlert } from "@/lib/publishCaregiverMealAlert";
+import { publishAndPushCaregiverMealAlert, shouldSkipMealFinishedPublish } from "@/lib/publishCaregiverMealAlert";
 import { resetRobotMealSession } from "@/lib/robotLiveAdmin";
 import { prisma } from "@/lib/prisma";
 
@@ -59,21 +59,31 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
       const careCtx = await getCareContext(ctx.uid, { email: ctx.email, displayName: ctx.name });
       const isEmergency = Boolean(body.emergency);
-      if (
-        careCtx.carePairId &&
-        careCtx.member?.carePair &&
-        (isEmergency || careCtx.role === "user")
-      ) {
+      if (careCtx.carePairId && careCtx.member?.carePair) {
         try {
           const pair = careCtx.member.carePair;
-          await publishAndPushCaregiverMealAlert({
-            carePairId: careCtx.carePairId,
-            careRecipientName: pair.careRecipientName || "User",
-            caregiverName: pair.caregiverName || "Caregiver",
-            bitesTotal: updated.bitesTotal,
-            plannedMealTime: body.plannedMealTime ?? updated.plannedMealTime ?? "",
-            emergency: isEmergency,
-          });
+          if (isEmergency) {
+            await publishAndPushCaregiverMealAlert({
+              carePairId: careCtx.carePairId,
+              careRecipientName: pair.careRecipientName || "User",
+              caregiverName: pair.caregiverName || "Caregiver",
+              bitesTotal: updated.bitesTotal,
+              plannedMealTime: body.plannedMealTime ?? updated.plannedMealTime ?? "",
+              emergency: true,
+            });
+          } else if (
+            !isEmergency &&
+            !(await shouldSkipMealFinishedPublish(careCtx.carePairId))
+          ) {
+            await publishAndPushCaregiverMealAlert({
+              carePairId: careCtx.carePairId,
+              careRecipientName: pair.careRecipientName || "User",
+              caregiverName: pair.caregiverName || "Caregiver",
+              bitesTotal: updated.bitesTotal,
+              plannedMealTime: body.plannedMealTime ?? updated.plannedMealTime ?? "",
+              emergency: false,
+            });
+          }
         } catch (alertErr) {
           console.warn("[meal stop] caregiver alert failed", alertErr);
         }

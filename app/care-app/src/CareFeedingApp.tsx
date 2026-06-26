@@ -43,6 +43,7 @@ import {
 } from "@/hooks/useMealReminders";
 import { useFcmPush } from "@/hooks/useFcmPush";
 import { isFcmConfigured } from "@/lib/firebasePublicConfig";
+import { inAppAlertKey, shouldDeliverInAppAlert } from "@/lib/notificationDedup";
 import { setupPushOnThisDevice } from "@/lib/fcmDiagnostics";
 import {
   minutesUntilNextReminder,
@@ -187,13 +188,24 @@ export default function CareFeedingApp({
   }, []);
 
   const refreshMealReminders = useCallback(async () => {
-    if (previewMode || isUser) return;
+    if (previewMode || isUser || isFcmConfigured()) return;
     const normalized = normalizeMealSchedule(mealScheduleRef.current);
     await scheduleLocalMealReminders(normalized, careRecipientName ?? "User", detectBrowserTimezone());
   }, [previewMode, isUser, careRecipientName]);
 
   const handleInAppAlert = useCallback(
-    (payload: { title?: string; body: string; severity?: "info" | "success" | "emergency" }) => {
+    (payload: {
+      title?: string;
+      body: string;
+      severity?: "info" | "success" | "emergency";
+      alertType?: string;
+    }) => {
+      const key = inAppAlertKey({
+        title: payload.title,
+        body: payload.body,
+        alertType: payload.alertType,
+      });
+      if (!shouldDeliverInAppAlert(key)) return;
       setActiveAlert({
         title: payload.title,
         body: payload.body,
@@ -216,7 +228,6 @@ export default function CareFeedingApp({
     careRecipientName: careRecipientName ?? "User",
     enabled: !previewMode && !isUser,
     timezone: detectBrowserTimezone(),
-    getIdToken,
     onReminder: handleMealReminder,
   });
 
@@ -229,13 +240,14 @@ export default function CareFeedingApp({
       handleInAppAlert({
         title: payload.title,
         body: payload.body,
-        severity: payload.alertType === "meal_emergency" ? "emergency" : "info",
+        severity: payload.alertType === "meal_emergency" ? "emergency" : payload.alertType === "meal_finished" ? "success" : "info",
+        alertType: payload.alertType,
       }),
   });
 
   useCaregiverMealAlerts({
     profileUid,
-    enabled: !previewMode && !isUser,
+    enabled: !previewMode && !isUser && !isFcmConfigured(),
     getIdToken,
     onAlert: (payload) =>
       handleInAppAlert({
@@ -320,11 +332,13 @@ export default function CareFeedingApp({
       }
     }
 
-    const local = await scheduleLocalMealReminders(
-      normalized,
-      careRecipientName ?? "User",
-      detectBrowserTimezone(),
-    );
+    const local = isFcmConfigured()
+      ? { scheduled: 0, supported: false }
+      : await scheduleLocalMealReminders(
+          normalized,
+          careRecipientName ?? "User",
+          detectBrowserTimezone(),
+        );
     if (local.scheduled > 0) {
       pushDetail += ` ${local.scheduled} reminder(s) scheduled on this device (${REMINDER_LEAD_MINUTES} min before meals, even if the tab is closed).`;
     } else if (local.supported) {
