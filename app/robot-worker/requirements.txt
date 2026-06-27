@@ -1,9 +1,8 @@
 firebase-admin>=6.5.0
 google-cloud-firestore>=2.16.0
-# Hardware (pip install when DRY_RUN=false on Jetson):
-# opencv-python>=4.8.0
-# mediapipe>=0.10.0
-# pupil-apriltags
-# adafruit-circuitpython-vl53l1x
-# Jetson.GPIO
-# Pillow
+
+# Jetson hardware stack (install in venv after requirements.txt):
+#   pip install -r requirements-jetson-hardware.txt
+#
+# MediaPipe FaceMesh needs protobuf 4.x (NOT 3.x or 5.x) on Jetson:
+#   AttributeError: FieldDescriptor has no attribute 'label'

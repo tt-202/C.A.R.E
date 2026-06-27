@@ -1,0 +1,15 @@
+# Jetson Orin Nano — mouth tracking, AprilTag, ToF, LCD, GPIO
+# Install inside robot-worker venv:
+#   pip install -r requirements.txt -r requirements-jetson-hardware.txt
+
+# MediaPipe + protobuf MUST match (see README troubleshooting)
+protobuf>=4.25.3,<5
+mediapipe>=0.10.13,<0.11
+
+opencv-python-headless>=4.8.0
+pupil-apriltags
+adafruit-circuitpython-vl53l1x
+Pillow
+
+# Jetson.GPIO — install from NVIDIA/Jetson system packages or:
+# pip install Jetson.GPIO

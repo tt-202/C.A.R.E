@@ -36,8 +36,7 @@ See `README_FEED_STATE_UPDATE.md` for state variables (`FEEDING_STARTED`, `FEEDI
 cd app/robot-worker
 python3 -m venv venv --system-site-packages
 source venv/bin/activate
-pip install -r requirements.txt
-pip install opencv-python mediapipe pupil-apriltags adafruit-circuitpython-vl53l1x Jetson.GPIO Pillow
+pip install -r requirements.txt -r requirements-jetson-hardware.txt
 cp .env.example .env
 # edit .env — place firebase-service-account.json in this folder
 python3 worker.py
@@ -93,3 +92,28 @@ python3 run_apriltag_scan.py --preview
 | `ARM_MOVE_SETTLE` | 1.0 s |
 
 Scoop trajectories and arm poses: `app/pi-server/pi_arm_server.py`
+
+## Troubleshooting (Jetson)
+
+### `FieldDescriptor` / `label` — MediaPipe crash at mouth tracking
+
+Wrong `protobuf` version. Fix in venv:
+
+```bash
+cd app/robot-worker
+source venv/bin/activate
+pip uninstall -y mediapipe protobuf
+pip install "protobuf>=4.25.3,<5" "mediapipe>=0.10.13"
+python3 -c "import mediapipe as mp; mp.solutions.face_mesh.FaceMesh(); print('MediaPipe OK')"
+```
+
+Do **not** use system `~/.local` mediapipe — always use the venv.
+
+### `[TOF ERROR] [Errno 121] Remote I/O error`
+
+I2C bus glitch on VL53L1X (wiring, loose cable, or ToF started while GPIO/I2C busy). Usually harmless after a feed error. If it repeats every bite:
+
+- Check ToF wiring on SDA/SCL
+- Reboot Jetson
+- Test alone: `python3 tof_stream_process.py`
+

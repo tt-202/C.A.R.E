@@ -230,22 +230,29 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
     if buttons is not None:
         buttons.wait_for_feed_release()
 
-    if not use_fake_tof():
-        start_tof_reader()
-
-    face_mesh = mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=False,
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-    )
+    try:
+        face_mesh = mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+    except AttributeError as exc:
+        if "FieldDescriptor" in str(exc) or "label" in str(exc):
+            raise RuntimeError(
+                "MediaPipe failed to start (protobuf version mismatch). "
+                "On Jetson run: pip install 'protobuf>=4.25.3,<5' 'mediapipe>=0.10.13'"
+            ) from exc
+        raise
 
     cap = cv2.VideoCapture(CAMERA_ID, cv2.CAP_V4L2)
     if not cap.isOpened():
         face_mesh.close()
-        stop_tof_reader()
         raise RuntimeError(f"Could not open USB camera: {CAMERA_ID}")
+
+    if not use_fake_tof():
+        start_tof_reader()
 
     center_start_time: float | None = None
     approach_active = False
