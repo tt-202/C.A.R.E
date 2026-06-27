@@ -27,9 +27,11 @@ from feeding_cycle import execute_home
 from robot_motion import execute_command
 from robot_session import (
     advance_selected_section,
+    end_feed_cycle,
     get_selected_section,
     is_apriltag_scan_done,
     is_feeding_active,
+    mark_emergency_state,
 )
 from robot_stats import (
     after_successful_feed,
@@ -42,6 +44,8 @@ from robot_stats import (
 )
 from emergency_notify import notify_app_backend_emergency
 from estop_hooks import set_estop_callback
+from lcd_gui import GUI_MESSAGES, start_gui_process, stop_gui_process, update_gui_state
+from pi_arm_client import PiArmClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("care-robot-worker")
@@ -148,17 +152,25 @@ def handle_gpio_feed(db: firestore.Client, rid: str, buttons: ButtonManager) -> 
         return
     if not is_apriltag_scan_done():
         logger.warning("GPIO feed blocked — run plate scan first (press SELECT/plate once)")
+        update_gui_state(
+            "selection",
+            GUI_MESSAGES["feed_blocked_no_scan"],
+            connected=True,
+            error="Plate scan required",
+            force=True,
+        )
         return
 
     section = get_selected_section()
     try:
         execute_command("next_bite", {"sectionNum": section}, buttons=buttons)
-        if not buttons.is_emergency_latched():
-            after_successful_feed(db, rid, section, pin=buttons.feed_pin)
-            logger.info("GPIO feed button → bite section=%s", section)
     except Exception:
         logger.exception("GPIO feed failed")
         record_failed_feed(db, rid)
+        return
+    if not buttons.is_emergency_latched() and not is_feeding_active():
+        after_successful_feed(db, rid, section, pin=buttons.feed_pin)
+        logger.info("GPIO feed button → bite section=%s", section)
 
 
 def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
@@ -167,6 +179,12 @@ def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) ->
         return
     if is_feeding_active():
         logger.warning("GPIO plate ignored — feed cycle active")
+        update_gui_state(
+            "feeding",
+            GUI_MESSAGES["select_during_feed"],
+            connected=True,
+            force=True,
+        )
         return
 
     try:
@@ -179,6 +197,14 @@ def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) ->
         else:
             section = advance_selected_section()
             set_live_state(db, rid, state="IDLE", section=section, emergency=False)
+            update_gui_state(
+                "selection",
+                GUI_MESSAGES["select_section"].format(section=section),
+                selected_plate_section=section,
+                connected=True,
+                error="NONE",
+                force=True,
+            )
             logger.info("GPIO plate button → selected section %s", section)
     except Exception:
         logger.exception("GPIO plate / selection failed")
@@ -199,17 +225,39 @@ def handle_emergency_recovery(db: firestore.Client, rid: str, buttons: ButtonMan
         _emergency_recovery_deadline = now + EMERGENCY_RECOVERY_SECONDS
 
     if now < _emergency_recovery_deadline:
+        seconds_left = max(0, int(round(_emergency_recovery_deadline - now)))
+        update_gui_state(
+            "emergency",
+            GUI_MESSAGES["emergency_wait"].format(seconds=seconds_left),
+            emergency=True,
+            connected=True,
+        )
         return
 
     if buttons.estop_raw_pressed():
+        update_gui_state(
+            "emergency",
+            GUI_MESSAGES["emergency_release"],
+            emergency=True,
+            connected=True,
+            force=True,
+        )
         return
 
     try:
         execute_home("EMERGENCY_AUTO_RECOVERY")
+        end_feed_cycle("EMERGENCY_RECOVERED_HOME")
         buttons.clear_emergency_latch()
         buttons.estop_reported = False
         _emergency_recovery_deadline = None
         set_live_state(db, rid, state="IDLE", section=get_selected_section(), emergency=False)
+        update_gui_state(
+            "idle",
+            GUI_MESSAGES["emergency_recovered"],
+            connected=True,
+            error="NONE",
+            force=True,
+        )
         logger.info("Emergency recovery complete — arm homed, system ready")
     except Exception:
         logger.exception("Emergency recovery (HOME) failed")
@@ -222,9 +270,18 @@ def handle_gpio_estop(db: firestore.Client, rid: str, buttons: ButtonManager) ->
     buttons.estop_reported = True
     buttons.latch_emergency("EMERGENCY_BUTTON_MAIN_LOOP")
     reason = "EMERGENCY_BUTTON"
+    mark_emergency_state(reason)
     phase = read_live_phase(db, rid)
 
     logger.warning("GPIO e-stop pressed (pin %s, phase=%s)", buttons.estop_pin, phase)
+
+    update_gui_state(
+        "emergency",
+        GUI_MESSAGES["emergency_active"].format(reason=reason),
+        emergency=True,
+        connected=True,
+        force=True,
+    )
 
     try:
         execute_command("stop", None)
@@ -283,8 +340,9 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
             section = get_selected_section()
             if isinstance(payload, dict) and isinstance(payload.get("sectionNum"), int):
                 section = payload["sectionNum"]
-            feed_pin = int(os.environ.get("GPIO_FEED_PIN", "37"))
-            after_successful_feed(db, rid, section, pin=feed_pin)
+            if not is_feeding_active():
+                feed_pin = int(os.environ.get("GPIO_FEED_PIN", "37"))
+                after_successful_feed(db, rid, section, pin=feed_pin)
         elif cmd == "stop":
             emergency = isinstance(payload, dict) and payload.get("emergency") is True
             reset_meal_session(db, rid, emergency=emergency)
@@ -324,6 +382,33 @@ def main() -> int:
         return 1
     rid = robot_id()
     mark_jetson_online(db, rid)
+
+    start_gui_process()
+    update_gui_state(
+        "startup",
+        GUI_MESSAGES["startup"],
+        selected_plate_section=get_selected_section(),
+        connected=False,
+        force=True,
+    )
+
+    pi_connected = False
+    try:
+        with PiArmClient() as arm:
+            arm.ping()
+        pi_connected = True
+    except Exception:
+        logger.warning("Pi arm server not reachable at startup (will retry on feed)")
+
+    update_gui_state(
+        "idle",
+        GUI_MESSAGES["ready_needs_scan"],
+        selected_plate_section=get_selected_section(),
+        connected=pi_connected,
+        error="NONE",
+        force=True,
+    )
+
     buttons = ButtonManager()
     global _active_buttons
     _active_buttons = buttons
@@ -372,6 +457,7 @@ def main() -> int:
         poller.stop()
         buttons.cleanup()
         set_estop_callback(None)
+        stop_gui_process()
     return 0
 
 

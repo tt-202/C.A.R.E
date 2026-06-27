@@ -30,9 +30,12 @@ from robot_session import (
     get_selected_section,
     is_feeding_active,
     mark_apriltag_scan_done,
+    mark_emergency_state,
+    set_system_state,
     start_feed_cycle,
 )
 from tof_subprocess import read_tof_cm_safe, start_tof_reader, stop_tof_reader, use_fake_tof
+from lcd_gui import GUI_MESSAGES, update_gui_state
 
 if TYPE_CHECKING:
     from gpio_buttons import ButtonManager
@@ -91,6 +94,14 @@ def _load_plate_scan_module():
     return module
 
 
+def _home_arm(arm: PiArmClient, reason: str) -> None:
+    set_system_state(
+        "FEEDING_RETURN_HOME" if is_feeding_active() else "RECOVERY_HOME",
+        reason,
+    )
+    arm.home(reason)
+
+
 def _estop_during_motion(buttons: ButtonManager | None, arm: PiArmClient, reason: str) -> bool:
     if buttons is None:
         return False
@@ -117,6 +128,14 @@ def run_apriltag_selection_phase(arm: PiArmClient, *, preview: bool = False) -> 
     arm.view_selection()
     time.sleep(VIEW_SETTLE_SECONDS)
 
+    update_gui_state(
+        "selection",
+        GUI_MESSAGES["apriltag_scan_start"],
+        connected=True,
+        error="NONE",
+        force=True,
+    )
+
     script = ROOT_DIR / "run_apriltag_scan.py"
     if not script.exists():
         raise RuntimeError(f"Missing {script}")
@@ -129,9 +148,23 @@ def run_apriltag_selection_phase(arm: PiArmClient, *, preview: bool = False) -> 
     result = subprocess.run(cmd, cwd=str(ROOT_DIR), check=False)
     if result.returncode != 0:
         logger.error("AprilTag scan failed (exit %s)", result.returncode)
+        update_gui_state(
+            "error",
+            GUI_MESSAGES["apriltag_scan_failed"],
+            connected=True,
+            error=f"AprilTag scan failed: exit {result.returncode}",
+            force=True,
+        )
         return False
 
     mark_apriltag_scan_done()
+    update_gui_state(
+        "idle",
+        GUI_MESSAGES["apriltag_scan_success"],
+        connected=True,
+        error="NONE",
+        force=True,
+    )
     logger.info("AprilTag scan completed for this run")
     return True
 
@@ -186,6 +219,14 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
     arm.view_mouth()
     time.sleep(VIEW_SETTLE_SECONDS)
 
+    update_gui_state(
+        "mouth_tracking_starting",
+        "Moving to mouth tracking view",
+        connected=True,
+        error="NONE",
+        force=True,
+    )
+
     if buttons is not None:
         buttons.wait_for_feed_release()
 
@@ -212,6 +253,7 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
     last_approach_command_time = 0.0
     last_valid_tof_cm: float | None = None
     last_tof_print_time = 0.0
+    last_tracking_gui_time = 0.0
     feeding_completed_and_homed = False
     deadline = (
         time.time() + MOUTH_SESSION_TIMEOUT if MOUTH_SESSION_TIMEOUT > 0 else None
@@ -242,7 +284,21 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
 
             if buttons is not None and buttons.feed_raw_pressed():
                 logger.info("[FEED] Ignored during active feed cycle")
+                update_gui_state(
+                    "feeding",
+                    "FEED ignored during active feeding phase",
+                    connected=True,
+                )
                 buttons.wait_for_feed_release(timeout=0.5)
+
+            if buttons is not None and buttons.plate_raw_pressed():
+                logger.info("[SELECT] Ignored during feeding phase")
+                update_gui_state(
+                    "feeding",
+                    GUI_MESSAGES["select_during_feed"],
+                    connected=True,
+                )
+                buttons.wait_for_plate_release(timeout=0.5)
 
             tof_reading = read_tof_cm_safe()
             if tof_reading is not None:
@@ -276,8 +332,22 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                     centered_duration = now - center_start_time
                     arm.centered()
 
+                    if now - last_tracking_gui_time >= 1.0:
+                        update_gui_state(
+                            "mouth_centered",
+                            f"Mouth centered for {centered_duration:.1f} sec",
+                            connected=True,
+                        )
+                        last_tracking_gui_time = now
+
                     if centered_duration >= CENTER_HOLD_SECONDS and not approach_active:
                         logger.info("[MOUTH] Centered %.1fs — approach allowed", centered_duration)
+                        update_gui_state(
+                            "approach",
+                            "Mouth centered; guarded approach active",
+                            connected=True,
+                            force=True,
+                        )
                         approach_active = True
                         approach_start_time = now
                         last_approach_command_time = 0.0
@@ -285,6 +355,12 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                     center_start_time = None
                     if approach_active:
                         logger.info("[APPROACH] Mouth left center — stopping")
+                        update_gui_state(
+                            "mouth_tracking",
+                            "Mouth left center zone; approach stopped",
+                            connected=True,
+                            force=True,
+                        )
                         arm.stop("MOUTH_NOT_CENTERED")
                     approach_active = False
                     approach_start_time = None
@@ -314,6 +390,11 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                             break
 
                         if tof_cm is None:
+                            update_gui_state(
+                                "holding",
+                                "No valid ToF reading; holding approach",
+                                connected=True,
+                            )
                             arm.centered()
                             last_approach_command_time = now
 
@@ -325,28 +406,57 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                             )
                             approach_active = False
                             arm.centered()
+                            set_system_state("FEEDING_HOLD_AT_MOUTH", f"tof_cm={tof_cm:.1f}")
 
                             hold_start = time.time()
                             while time.time() - hold_start < BITE_HOLD_SECONDS:
                                 if _estop_during_motion(buttons, arm, "EMERGENCY_DURING_BITE_HOLD"):
                                     break
+                                seconds_left = max(
+                                    0,
+                                    int(round(BITE_HOLD_SECONDS - (time.time() - hold_start))),
+                                )
+                                update_gui_state(
+                                    "holding",
+                                    GUI_MESSAGES["feed_hold_at_mouth"].format(seconds=seconds_left),
+                                    connected=True,
+                                )
                                 arm.centered()
                                 time.sleep(0.2)
 
                             if buttons is not None and buttons.is_emergency_latched():
                                 break
 
-                            arm.home("FEED_COMPLETE_RETURN_HOME")
+                            update_gui_state(
+                                "recovery",
+                                GUI_MESSAGES["feed_return_home"],
+                                connected=True,
+                                error="NONE",
+                                force=True,
+                            )
+                            _home_arm(arm, "FEED_COMPLETE_RETURN_HOME")
                             feeding_completed_and_homed = True
                             break
 
                         else:
                             logger.info("[APPROACH] ToF=%.1f cm — APPROACH_MOUTH", tof_cm)
+                            update_gui_state(
+                                "approach",
+                                f"Approaching mouth | ToF {tof_cm:.1f} cm",
+                                connected=True,
+                            )
                             arm.approach_mouth(tof_cm)
                             last_approach_command_time = now
             else:
                 if approach_active:
                     logger.info("[APPROACH] Face lost — stopping")
+                    update_gui_state(
+                        "error",
+                        "Face lost during approach",
+                        connected=True,
+                        error="No face detected",
+                        force=True,
+                    )
                     arm.stop("FACE_LOST")
                 center_start_time = None
                 approach_active = False
@@ -367,15 +477,57 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
             arm.stop("MOUTH_TRACKING_PHASE_ENDED")
             if buttons is None or not buttons.is_emergency_latched():
                 try:
-                    arm.home("FEED_PHASE_ENDED_RETURN_HOME")
+                    update_gui_state(
+                        "recovery",
+                        GUI_MESSAGES["feed_return_home"],
+                        connected=True,
+                        error="NONE",
+                        force=True,
+                    )
+                    _home_arm(arm, "FEED_PHASE_ENDED_RETURN_HOME")
                     feeding_completed_and_homed = True
                 except Exception:
                     logger.exception("Home return failed after mouth phase ended")
+                    update_gui_state(
+                        "error",
+                        "Home return failed after feed",
+                        connected=True,
+                        error="Home return failed after feed",
+                        force=True,
+                    )
+                    set_system_state("FEED_ERROR_HOME_FAILED", "mouth_phase_ended")
 
         cap.release()
         cv2.destroyAllWindows()
         face_mesh.close()
         stop_tof_reader()
+
+        if buttons is not None and buttons.is_emergency_latched():
+            update_gui_state(
+                "emergency",
+                "Emergency stop active",
+                emergency=True,
+                connected=True,
+                force=True,
+            )
+        elif feeding_completed_and_homed:
+            end_feed_cycle("FEED_COMPLETE_HOME_DONE")
+            update_gui_state(
+                "idle",
+                GUI_MESSAGES["feed_end"],
+                connected=True,
+                error="NONE",
+                force=True,
+            )
+        else:
+            update_gui_state(
+                "idle",
+                "Mouth tracking phase ended",
+                connected=True,
+                error="NONE",
+                force=True,
+            )
+
         logger.info("Mouth tracking phase ended (homed=%s)", feeding_completed_and_homed)
 
     return feeding_completed_and_homed
@@ -393,48 +545,99 @@ def execute_next_bite(section_num: int | None = None, buttons: ButtonManager | N
     start_feed_cycle(section)
     logger.info("=== BITE START section=%s ===", section)
 
+    update_gui_state(
+        "feeding",
+        GUI_MESSAGES["feed_start"].format(section=section),
+        selected_plate_section=section,
+        connected=True,
+        error="NONE",
+        force=True,
+    )
+
     if _dry_run():
         logger.info("DRY_RUN next_bite: SCOOP → VIEW_MOUTH → mouth track → HOME")
         time.sleep(2.0)
-        end_feed_cycle()
+        end_feed_cycle("FEED_COMPLETE_HOME_DONE")
         logger.info("=== BITE DONE (dry run) ===")
         return
 
-    homed = False
     try:
         with PiArmClient() as arm:
             logger.info("Pi ping: %s", arm.ping())
+            update_gui_state("idle", "Connected to Raspberry Pi arm server", connected=True, force=True)
 
             if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_SCOOP"):
                 return
 
             logger.info("Step 1/3: SCOOP section %s", section)
+            update_gui_state(
+                "scooping",
+                GUI_MESSAGES["scoop_start"].format(section=section),
+                selected_plate_section=section,
+                connected=True,
+                error="NONE",
+                force=True,
+            )
             arm.scoop(section)
+            update_gui_state(
+                "scoop_complete",
+                GUI_MESSAGES["scoop_success"],
+                selected_plate_section=section,
+                connected=True,
+                error="NONE",
+                force=True,
+            )
 
             if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_MOUTH"):
                 return
 
             logger.info("Step 2/3: mouth tracking + ToF approach")
-            homed = run_mouth_feed_session(arm, buttons)
+            run_mouth_feed_session(arm, buttons)
 
             if buttons is not None and buttons.is_emergency_latched():
                 logger.warning("=== BITE ABORTED (emergency) section=%s ===", section)
                 return
 
-    except Exception:
+    except Exception as exc:
         logger.exception("Bite failed for section %s", section)
+        update_gui_state(
+            "error",
+            f"Mouth phase failed: {exc}. Returning home before unlocking selection.",
+            connected=True,
+            error="Mouth phase failed",
+            force=True,
+        )
         try:
             with PiArmClient() as arm:
-                arm.stop("BITE_ERROR")
-                if buttons is None or not buttons.is_emergency_latched():
-                    arm.home("BITE_ERROR_RETURN_HOME")
-                    homed = True
+                arm.stop("MOUTH_PHASE_ERROR")
         except Exception:
-            logger.exception("Error recovery failed")
+            logger.exception("STOP after mouth phase error failed")
+
+        if buttons is not None and buttons.is_emergency_latched():
+            mark_emergency_state("FEED_ERROR_DURING_EMERGENCY")
+        else:
+            try:
+                with PiArmClient() as arm:
+                    _home_arm(arm, "FEED_ERROR_RETURN_HOME")
+                end_feed_cycle("FEED_ERROR_HOME_DONE")
+                update_gui_state(
+                    "idle",
+                    "Feed error handled; arm returned home. SELECT is enabled again.",
+                    connected=True,
+                    error="NONE",
+                    force=True,
+                )
+            except Exception as home_error:
+                logger.exception("Feed error occurred, but HOME also failed")
+                set_system_state("FEED_ERROR_HOME_FAILED", str(home_error))
+                update_gui_state(
+                    "error",
+                    f"Feed error, and home return failed: {home_error}. SELECT remains locked.",
+                    connected=True,
+                    error="Home return failed",
+                    force=True,
+                )
         raise
-    finally:
-        if homed:
-            end_feed_cycle()
 
     logger.info("=== BITE DONE section=%s ===", section)
 
@@ -452,5 +655,4 @@ def execute_home(reason: str = "HOME") -> None:
         logger.info("DRY_RUN home")
         return
     with PiArmClient() as arm:
-        arm.home(reason)
-    end_feed_cycle()
+        _home_arm(arm, reason)

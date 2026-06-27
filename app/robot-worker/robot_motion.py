@@ -11,6 +11,7 @@ from feeding_cycle import (
     execute_next_bite,
     execute_stop,
 )
+from robot_session import is_feeding_active
 
 if TYPE_CHECKING:
     from gpio_buttons import ButtonManager
@@ -37,10 +38,16 @@ def execute_command(
         return
 
     if cmd == "calibrate_plate":
+        if is_feeding_active():
+            logger.warning("calibrate_plate ignored — feed cycle active")
+            return
         calibrate_plate(preview=False)
         return
 
     if cmd == "next_bite":
+        if is_feeding_active():
+            logger.warning("next_bite ignored — feed cycle already active")
+            return
         section = 1
         if isinstance(payload, dict) and isinstance(payload.get("sectionNum"), int):
             section = payload["sectionNum"]

@@ -156,6 +156,11 @@ class ButtonManager:
             return False
         return self._gpio.input(self.feed_pin) == self._gpio.LOW
 
+    def plate_raw_pressed(self) -> bool:
+        if not self.enabled or self._gpio is None:
+            return False
+        return self._gpio.input(self.plate_pin) == self._gpio.LOW
+
     def clear_emergency_latch(self) -> None:
         with self._lock:
             self.emergency_latched = False
@@ -201,6 +206,15 @@ class ButtonManager:
         while self.feed_raw_pressed():
             if time.time() - start > timeout:
                 logger.warning("[GPIO] FEED still held after timeout")
+                return
+            time.sleep(0.02)
+
+    def wait_for_plate_release(self, timeout: float = 0.5) -> None:
+        if not self.enabled or self._gpio is None:
+            return
+        start = time.time()
+        while self.plate_raw_pressed():
+            if time.time() - start > timeout:
                 return
             time.sleep(0.02)
 

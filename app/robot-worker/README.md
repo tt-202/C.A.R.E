@@ -6,11 +6,21 @@ Listens to **Firebase Firestore** for commands from the care-app and controls th
 
 ## Feed cycle (one bite)
 
+Matches `README_FEED_STATE_UPDATE.md` — SELECT stays locked until HOME finishes.
+
 1. **SCOOP** — Pi runs fixed trajectory for selected plate section (1–4)
 2. **VIEW_MOUTH** — Pi moves to mouth tracking pose
 3. **Mouth tracking** — Jetson MediaPipe + ToF subprocess → Pi `ALIGN` / `CENTERED` / `APPROACH_MOUTH`
-4. **BITE_HOLD** — hold at mouth when ToF ≤ `STOP_DISTANCE_CM` (default 30 cm)
-5. **HOME** — Pi returns to startup joint angles
+4. **BITE_HOLD** — hold at mouth when ToF ≤ `STOP_DISTANCE_CM` (30 cm) for `BITE_HOLD_SECONDS` (5 s)
+5. **HOME** — Pi `move_to_startup_position()` (all-zero joints); then `end_feed_cycle()` unlocks SELECT
+
+### Button rules (during feed)
+
+- **SELECT** ignored while `feeding_active` (including mouth tracking)
+- **FEED** ignored during active feed cycle
+- **E-stop** always wins → STOP → recovery HOME → `end_feed_cycle("EMERGENCY_RECOVERED_HOME")`
+
+See `README_FEED_STATE_UPDATE.md` for state variables (`FEEDING_STARTED`, `FEEDING_HOLD_AT_MOUTH`, `FEEDING_RETURN_HOME`, etc.).
 
 ## GPIO buttons (BOARD numbering)
 
@@ -27,7 +37,7 @@ cd app/robot-worker
 python3 -m venv venv --system-site-packages
 source venv/bin/activate
 pip install -r requirements.txt
-pip install opencv-python mediapipe pupil-apriltags adafruit-circuitpython-vl53l1x Jetson.GPIO
+pip install opencv-python mediapipe pupil-apriltags adafruit-circuitpython-vl53l1x Jetson.GPIO Pillow
 cp .env.example .env
 # edit .env — place firebase-service-account.json in this folder
 python3 worker.py
@@ -36,6 +46,16 @@ python3 worker.py
 On Pi: `python3 app/pi-server/pi_arm_server.py` (port **5002**).
 
 `worker.py` loads `.env` automatically — do not use `export $(grep ...)` (breaks values with spaces or dashes).
+
+## LCD GUI (same as June26)
+
+`lcd_display.py` opens fullscreen on the Jetson display. `worker.py` starts it automatically when `LCD_GUI_ENABLED=true` (default when a display is present).
+
+- Status panel: connection, state, message, error
+- Plate panel: section 1–4 images from `images/section1.png` … `section4.png`
+- GPIO buttons still control the robot; the GUI is display-only
+
+Standalone test: `python3 lcd_display.py`
 
 ## ToF sensor (same as June26)
 

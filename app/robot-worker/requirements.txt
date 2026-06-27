@@ -6,3 +6,4 @@ google-cloud-firestore>=2.16.0
 # pupil-apriltags
 # adafruit-circuitpython-vl53l1x
 # Jetson.GPIO
+# Pillow
