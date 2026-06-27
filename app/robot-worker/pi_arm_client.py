@@ -2,7 +2,7 @@
 JSON TCP client for New_Settings_June26_raspberry/pi_arm_server.py (port 5002).
 
 Commands: PING, VIEW_SELECTION, VIEW_MOUTH, SCOOP, ALIGN, CENTERED,
-          APPROACH_MOUTH, STOP, HOME
+          APPROACH_MOUTH, BITE_HOLD_READY, STOP, HOME
 """
 
 from __future__ import annotations
@@ -124,6 +124,16 @@ class PiArmClient:
         if tof_cm is not None:
             msg["tof_cm"] = float(tof_cm)
         self.send_json(msg, wait_reply=False)
+
+    def bite_hold_ready(self, tof_cm: float | None = None) -> dict[str, Any] | None:
+        msg: dict[str, Any] = {"cmd": "BITE_HOLD_READY"}
+        if tof_cm is not None:
+            msg["tof_cm"] = float(tof_cm)
+        try:
+            return self.send_json(msg, reply_timeout=1.0)
+        except Exception:
+            logger.warning("BITE_HOLD_READY sent (reply optional)")
+            return None
 
     def __enter__(self) -> PiArmClient:
         self.connect()

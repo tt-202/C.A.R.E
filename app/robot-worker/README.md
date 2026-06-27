@@ -11,8 +11,10 @@ Matches `README_FEED_STATE_UPDATE.md` — SELECT stays locked until HOME finishe
 1. **SCOOP** — Pi runs fixed trajectory for selected plate section (1–4)
 2. **VIEW_MOUTH** — Pi moves to mouth tracking pose
 3. **Mouth tracking** — Jetson MediaPipe + ToF subprocess → Pi `ALIGN` / `CENTERED` / `APPROACH_MOUTH`
-4. **BITE_HOLD** — hold at mouth when ToF ≤ `STOP_DISTANCE_CM` (30 cm) for `BITE_HOLD_SECONDS` (5 s)
+4. **BITE_HOLD** — ToF ≤ `STOP_DISTANCE_CM` (50 cm) stable for `STOP_DISTANCE_STABLE_SECONDS` (2 s), then Pi `BITE_HOLD_READY` + hold `BITE_HOLD_SECONDS` (3 s)
 5. **HOME** — Pi `move_to_startup_position()` (all-zero joints); then `end_feed_cycle()` unlocks SELECT
+
+Matches `CARE_bite_hold_patch/` (stable ToF confirm → freeze arm → bite timer → HOME).
 
 ### Button rules (during feed)
 
@@ -81,19 +83,37 @@ Uses `april_tag_with_value_update.py` (copied from June26).
 python3 run_apriltag_scan.py --preview
 ```
 
-## Tuning (`.env` — defaults match June26)
+## Tuning (`.env` — defaults match `CARE_bite_hold_patch`)
 
 | Variable | Default |
 |----------|---------|
-| `STOP_DISTANCE_CM` | 30 |
-| `BITE_HOLD_SECONDS` | 5 |
+| `STOP_DISTANCE_CM` | 50 |
+| `STOP_DISTANCE_STABLE_SECONDS` | 2 (ToF must stay ≤ stop distance before bite timer) |
+| `BITE_HOLD_SECONDS` | 3 |
 | `CENTER_HOLD_SECONDS` | 3 |
 | `CENTER_TOLERANCE` | 30 px |
 | `ARM_MOVE_SETTLE` | 1.0 s |
+| `MOUTH_SESSION_TIMEOUT` | 0 (disabled) |
 
 Scoop trajectories and arm poses: `app/pi-server/pi_arm_server.py`
 
 ## Troubleshooting (Jetson)
+
+### Arm stops after SELECT + FEED and does not return HOME
+
+**After SELECT (first press):** arm moves to **plate view** and stays there until FEED. This is normal (June26).
+
+**After FEED:** bite hold flow (`CARE_bite_hold_patch`):
+
+1. Face visible on `/dev/video0`; mouth centered **3 s**
+2. ToF approach to **≤ 50 cm**
+3. Confirm ToF stable **2 s** (`STOP_DISTANCE_STABLE_SECONDS`) — Jetson sends **`BITE_HOLD_READY`**, Pi stops arm
+4. Camera/MediaPipe close (no more ALIGN during hold)
+5. Hold **3 s** (`BITE_HOLD_SECONDS`) → **HOME**
+
+**If e-stop (pin 33) was pressed:** release button, wait **10 s** for recovery HOME.
+
+Check logs for `[BITE_HOLD_READY]`, `[APPROACH]`, `Emergency latched — recovery will HOME`.
 
 ### `FieldDescriptor` / `label` — MediaPipe crash at mouth tracking
 

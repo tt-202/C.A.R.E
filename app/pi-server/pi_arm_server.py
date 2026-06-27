@@ -91,6 +91,16 @@ mc = MyCobot320(SERIAL_PORT, BAUD_RATE)
 mc.power_on()
 
 
+arm_phase = "STARTUP"
+
+
+def set_arm_phase(new_phase, reason=""):
+    global arm_phase
+    arm_phase = str(new_phase)
+    suffix = f" | {reason}" if reason else ""
+    print(f"[ARM_PHASE] {arm_phase}{suffix}", flush=True)
+
+
 current = {
     "x": MOUTH_VIEW[0],
     "y": MOUTH_VIEW[1],
@@ -127,6 +137,7 @@ def safe_stop(reason="STOP"):
 
 
 def move_to_startup_position():
+    set_arm_phase("HOME_RETURN")
     print("Setting fresh mode 0 before startup angle move...", flush=True)
 
     mc.set_fresh_mode(0)
@@ -144,9 +155,11 @@ def move_to_startup_position():
 
     print("Startup angles actual:", mc.get_angles(), flush=True)
     print("Startup coords actual:", mc.get_coords(), flush=True)
+    set_arm_phase("HOME")
 
 
 def move_to_selection_view():
+    set_arm_phase("VIEW_SELECTION")
     print("Moving to selection / AprilTag view using send_coords angular coordinate mode.", flush=True)
 
     mc.set_fresh_mode(0)
@@ -163,6 +176,7 @@ def move_to_selection_view():
 
 def move_to_mouth_view():
     global current
+    set_arm_phase("VIEW_MOUTH")
 
     print("Moving to mouth / feeding view using send_coords angular coordinate mode.", flush=True)
 
@@ -191,6 +205,7 @@ def move_to_mouth_view():
     mc.set_fresh_mode(1)
     mc.set_vision_mode(1)
 
+    set_arm_phase("MOUTH_TRACKING")
     print("Vision tracking modes enabled for linear mouth alignment.", flush=True)
 
 
@@ -234,6 +249,7 @@ def apply_move(cmd):
 
 
 def process_alignment(error_x, error_y):
+    set_arm_phase("MOUTH_ALIGN")
     if abs(error_x) > 40:
         if error_x > 0:
             apply_move("MOVE_RIGHT")
@@ -249,6 +265,7 @@ def process_alignment(error_x, error_y):
 
 def approach_mouth_step(tof_cm=None):
     global current
+    set_arm_phase("APPROACH_MOUTH", f"tof_cm={tof_cm}")
 
     old_y = current["y"]
 
@@ -277,6 +294,7 @@ def execute_scoop(section):
     if section not in SCOOP_TRAJECTORIES:
         raise ValueError(f"Invalid scoop section {section}. Expected 1, 2, 3, or 4.")
 
+    set_arm_phase("SCOOP", f"section={section}")
     print(f"[SCOOP] Starting scoop for plate section {section}", flush=True)
 
     # Use the same mode setup as your standalone tested scoop scripts.
@@ -293,6 +311,14 @@ def execute_scoop(section):
         time.sleep(wait_seconds)
 
     print(f"[SCOOP] Completed scoop for plate section {section}", flush=True)
+    set_arm_phase("SCOOP_DONE", f"section={section}")
+
+
+def bite_hold_ready(tof_cm=None):
+    """Stop active tracking/approach motion and hold position for the bite window."""
+    set_arm_phase("BITE_HOLD_READY", f"tof_cm={tof_cm}")
+    safe_stop("BITE_HOLD_READY")
+
 
 def send_json(conn, msg):
     conn.sendall((json.dumps(msg) + "\n").encode())
@@ -369,6 +395,14 @@ def handle_client(conn, addr):
 
                     approach_mouth_step(tof_cm)
 
+                elif cmd == "BITE_HOLD_READY":
+                    tof_cm = msg.get("tof_cm", None)
+                    bite_hold_ready(tof_cm)
+                    send_json(conn, {
+                        "status": "ok",
+                        "reply": "BITE_HOLD_READY",
+                        "tof_cm": tof_cm,
+                    })
 
                 elif cmd == "STOP":
                     reason = msg.get("reason", "STOP")

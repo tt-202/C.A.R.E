@@ -53,6 +53,8 @@ STATE_LABELS = {
     "mouth_tracking": "MOUTH TRACKING",
     "mouth_centered": "MOUTH CENTERED",
     "approach": "APPROACHING MOUTH",
+    "bite_hold_pending": "BITE HOLD PENDING",
+    "bite_hold_ready": "BITE HOLD",
     "holding": "HOLDING",
     "recovery": "RECOVERY",
     "emergency": "EMERGENCY STOP",

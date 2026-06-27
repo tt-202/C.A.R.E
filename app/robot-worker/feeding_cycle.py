@@ -51,8 +51,9 @@ CENTER_TOLERANCE = int(
     os.environ.get("CENTER_TOLERANCE", os.environ.get("DEAD_ZONE_PX", "30"))
 )
 CENTER_HOLD_SECONDS = float(os.environ.get("CENTER_HOLD_SECONDS", "3.0"))
-STOP_DISTANCE_CM = float(os.environ.get("STOP_DISTANCE_CM", "30.0"))
-BITE_HOLD_SECONDS = float(os.environ.get("BITE_HOLD_SECONDS", "5.0"))
+STOP_DISTANCE_CM = float(os.environ.get("STOP_DISTANCE_CM", "50.0"))
+STOP_DISTANCE_STABLE_SECONDS = float(os.environ.get("STOP_DISTANCE_STABLE_SECONDS", "2.0"))
+BITE_HOLD_SECONDS = float(os.environ.get("BITE_HOLD_SECONDS", "3.0"))
 APPROACH_COMMAND_PERIOD = float(os.environ.get("APPROACH_COMMAND_PERIOD", "0.20"))
 MAX_APPROACH_SECONDS = float(os.environ.get("MAX_APPROACH_SECONDS", "6.0"))
 LOOP_DELAY = float(os.environ.get("LOOP_DELAY", "0.03"))
@@ -257,6 +258,8 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
     center_start_time: float | None = None
     approach_active = False
     approach_start_time: float | None = None
+    stop_distance_start: float | None = None
+    bite_hold_active = False
     last_approach_command_time = 0.0
     last_valid_tof_cm: float | None = None
     last_tof_print_time = 0.0
@@ -267,9 +270,10 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
     )
 
     logger.info(
-        "Mouth tracking (hold=%.1fs, stop=%.1fcm, bite_hold=%.1fs, fake_tof=%s)",
+        "Mouth tracking (hold=%.1fs, stop=%.1fcm stable=%.1fs, bite_hold=%.1fs, fake_tof=%s)",
         CENTER_HOLD_SECONDS,
         STOP_DISTANCE_CM,
+        STOP_DISTANCE_STABLE_SECONDS,
         BITE_HOLD_SECONDS,
         use_fake_tof(),
     )
@@ -357,10 +361,11 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                         )
                         approach_active = True
                         approach_start_time = now
+                        stop_distance_start = None
                         last_approach_command_time = 0.0
                 else:
                     center_start_time = None
-                    if approach_active:
+                    if approach_active and not bite_hold_active:
                         logger.info("[APPROACH] Mouth left center — stopping")
                         update_gui_state(
                             "mouth_tracking",
@@ -369,8 +374,10 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                             force=True,
                         )
                         arm.stop("MOUTH_NOT_CENTERED")
-                    approach_active = False
-                    approach_start_time = None
+                    if not bite_hold_active:
+                        approach_active = False
+                        approach_start_time = None
+                        stop_distance_start = None
 
                     if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_ALIGN"):
                         break
@@ -406,46 +413,95 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                             last_approach_command_time = now
 
                         elif tof_cm <= STOP_DISTANCE_CM:
-                            logger.info(
-                                "[APPROACH] Stop distance %.1f cm — holding %.1fs for bite",
-                                tof_cm,
-                                BITE_HOLD_SECONDS,
+                            if stop_distance_start is None:
+                                stop_distance_start = now
+                                logger.info(
+                                    "[APPROACH] ToF %.1f cm reached threshold %.1f cm — starting stable timer",
+                                    tof_cm,
+                                    STOP_DISTANCE_CM,
+                                )
+
+                            stable_duration = now - stop_distance_start
+                            seconds_left = max(
+                                0,
+                                int(round(STOP_DISTANCE_STABLE_SECONDS - stable_duration)),
                             )
-                            approach_active = False
+
+                            # Stop forward motion while confirming the ToF reading is stable.
+                            # This prevents the arm from continuing to approach during the 2 s guard window.
                             arm.centered()
-                            set_system_state("FEEDING_HOLD_AT_MOUTH", f"tof_cm={tof_cm:.1f}")
+                            update_gui_state(
+                                "bite_hold_pending",
+                                f"Mouth distance ready. Confirming for {seconds_left} sec",
+                                connected=True,
+                            )
+                            last_approach_command_time = now
 
-                            hold_start = time.time()
-                            while time.time() - hold_start < BITE_HOLD_SECONDS:
-                                if _estop_during_motion(buttons, arm, "EMERGENCY_DURING_BITE_HOLD"):
-                                    break
-                                seconds_left = max(
-                                    0,
-                                    int(round(BITE_HOLD_SECONDS - (time.time() - hold_start))),
+                            if stable_duration >= STOP_DISTANCE_STABLE_SECONDS:
+                                logger.info(
+                                    "[BITE_HOLD_READY] ToF %.1f cm stable for %.1fs — stopping tracking and holding still",
+                                    tof_cm,
+                                    STOP_DISTANCE_STABLE_SECONDS,
                                 )
+                                bite_hold_active = True
+                                approach_active = False
+                                set_system_state("BITE_HOLD_READY", f"tof_cm={tof_cm:.1f}")
+
+                                # Tell the Pi to stop/hold the arm once. After this, do not send ALIGN,
+                                # APPROACH_MOUTH, or CENTERED during the bite window.
+                                arm.bite_hold_ready(tof_cm)
+
                                 update_gui_state(
-                                    "holding",
-                                    GUI_MESSAGES["feed_hold_at_mouth"].format(seconds=seconds_left),
+                                    "bite_hold_ready",
+                                    GUI_MESSAGES["feed_hold_at_mouth"].format(
+                                        seconds=int(round(BITE_HOLD_SECONDS))
+                                    ),
                                     connected=True,
+                                    error="NONE",
+                                    force=True,
                                 )
-                                arm.centered()
-                                time.sleep(0.2)
 
-                            if buttons is not None and buttons.is_emergency_latched():
+                                # Camera and MediaPipe are no longer needed during the bite hold.
+                                # Release them before the 3 s hold so no alignment loop can continue.
+                                cap.release()
+                                cap = None
+                                cv2.destroyAllWindows()
+                                face_mesh.close()
+                                face_mesh = None
+                                stop_tof_reader()
+
+                                hold_start = time.time()
+                                while time.time() - hold_start < BITE_HOLD_SECONDS:
+                                    if _estop_during_motion(buttons, arm, "EMERGENCY_DURING_BITE_HOLD"):
+                                        break
+                                    seconds_left = max(
+                                        0,
+                                        int(round(BITE_HOLD_SECONDS - (time.time() - hold_start))),
+                                    )
+                                    update_gui_state(
+                                        "bite_hold_ready",
+                                        GUI_MESSAGES["feed_hold_at_mouth"].format(seconds=seconds_left),
+                                        connected=True,
+                                    )
+                                    time.sleep(0.2)
+
+                                if buttons is not None and buttons.is_emergency_latched():
+                                    break
+
+                                update_gui_state(
+                                    "recovery",
+                                    GUI_MESSAGES["feed_return_home"],
+                                    connected=True,
+                                    error="NONE",
+                                    force=True,
+                                )
+                                _home_arm(arm, "FEED_COMPLETE_RETURN_HOME")
+                                feeding_completed_and_homed = True
                                 break
 
-                            update_gui_state(
-                                "recovery",
-                                GUI_MESSAGES["feed_return_home"],
-                                connected=True,
-                                error="NONE",
-                                force=True,
-                            )
-                            _home_arm(arm, "FEED_COMPLETE_RETURN_HOME")
-                            feeding_completed_and_homed = True
-                            break
-
                         else:
+                            stop_distance_start = None
+                            bite_hold_active = False
                             logger.info("[APPROACH] ToF=%.1f cm — APPROACH_MOUTH", tof_cm)
                             update_gui_state(
                                 "approach",
@@ -455,7 +511,7 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                             arm.approach_mouth(tof_cm)
                             last_approach_command_time = now
             else:
-                if approach_active:
+                if approach_active and not bite_hold_active:
                     logger.info("[APPROACH] Face lost — stopping")
                     update_gui_state(
                         "error",
@@ -466,8 +522,10 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                     )
                     arm.stop("FACE_LOST")
                 center_start_time = None
-                approach_active = False
-                approach_start_time = None
+                if not bite_hold_active:
+                    approach_active = False
+                    approach_start_time = None
+                    stop_distance_start = None
 
             if SHOW_MOUTH_PREVIEW:
                 cv2.imshow("Jetson Mouth Tracking", frame)
@@ -504,9 +562,11 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                     )
                     set_system_state("FEED_ERROR_HOME_FAILED", "mouth_phase_ended")
 
-        cap.release()
+        if cap is not None:
+            cap.release()
         cv2.destroyAllWindows()
-        face_mesh.close()
+        if face_mesh is not None:
+            face_mesh.close()
         stop_tof_reader()
 
         if buttons is not None and buttons.is_emergency_latched():
