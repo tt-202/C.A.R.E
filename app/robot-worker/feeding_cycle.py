@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+os.environ.setdefault("JETSON_MODEL_NAME", "JETSON_ORIN_NANO")
+
 from pi_arm_client import PiArmClient, wait_after_move
 from robot_session import (
     end_feed_cycle,
@@ -42,18 +44,27 @@ ROOT_DIR = Path(__file__).resolve().parent
 CAMERA_ID = os.environ.get("CAMERA_ID", "/dev/video0")
 CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "480"))
-DEAD_ZONE_PX = int(os.environ.get("DEAD_ZONE_PX", "30"))
+CENTER_TOLERANCE = int(
+    os.environ.get("CENTER_TOLERANCE", os.environ.get("DEAD_ZONE_PX", "30"))
+)
 CENTER_HOLD_SECONDS = float(os.environ.get("CENTER_HOLD_SECONDS", "3.0"))
 STOP_DISTANCE_CM = float(os.environ.get("STOP_DISTANCE_CM", "30.0"))
 BITE_HOLD_SECONDS = float(os.environ.get("BITE_HOLD_SECONDS", "5.0"))
 APPROACH_COMMAND_PERIOD = float(os.environ.get("APPROACH_COMMAND_PERIOD", "0.20"))
 MAX_APPROACH_SECONDS = float(os.environ.get("MAX_APPROACH_SECONDS", "6.0"))
 LOOP_DELAY = float(os.environ.get("LOOP_DELAY", "0.03"))
-SHOW_APRILTAG_PREVIEW = os.environ.get("SHOW_APRILTAG_PREVIEW", "false").lower() in (
+VIEW_SETTLE_SECONDS = float(os.environ.get("ARM_MOVE_SETTLE", "1.0"))
+SHOW_APRILTAG_PREVIEW = os.environ.get("SHOW_APRILTAG_PREVIEW", "true").lower() in (
     "1",
     "true",
     "yes",
 )
+SHOW_MOUTH_PREVIEW = os.environ.get("SHOW_MOUTH_PREVIEW", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+MOUTH_SESSION_TIMEOUT = float(os.environ.get("MOUTH_SESSION_TIMEOUT", "0"))
 
 
 def _dry_run() -> bool:
@@ -104,7 +115,7 @@ def run_apriltag_selection_phase(arm: PiArmClient, *, preview: bool = False) -> 
         return True
 
     arm.view_selection()
-    wait_after_move(1.0)
+    time.sleep(VIEW_SETTLE_SECONDS)
 
     script = ROOT_DIR / "run_apriltag_scan.py"
     if not script.exists():
@@ -171,10 +182,12 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
             buttons.latch_emergency("EMERGENCY_BEFORE_MOUTH_TRACKING")
             arm.stop("EMERGENCY_BEFORE_MOUTH_TRACKING")
             return False
-        buttons.wait_for_feed_release()
 
     arm.view_mouth()
-    wait_after_move(1.0)
+    time.sleep(VIEW_SETTLE_SECONDS)
+
+    if buttons is not None:
+        buttons.wait_for_feed_release()
 
     if not use_fake_tof():
         start_tof_reader()
@@ -198,18 +211,26 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
     approach_start_time: float | None = None
     last_approach_command_time = 0.0
     last_valid_tof_cm: float | None = None
+    last_tof_print_time = 0.0
     feeding_completed_and_homed = False
-    deadline = time.time() + float(os.environ.get("MOUTH_SESSION_TIMEOUT", "90"))
+    deadline = (
+        time.time() + MOUTH_SESSION_TIMEOUT if MOUTH_SESSION_TIMEOUT > 0 else None
+    )
 
     logger.info(
-        "Mouth tracking (hold=%.1fs, stop=%.1fcm, bite_hold=%.1fs)",
+        "Mouth tracking (hold=%.1fs, stop=%.1fcm, bite_hold=%.1fs, fake_tof=%s)",
         CENTER_HOLD_SECONDS,
         STOP_DISTANCE_CM,
         BITE_HOLD_SECONDS,
+        use_fake_tof(),
     )
 
     try:
-        while time.time() < deadline:
+        while True:
+            if deadline is not None and time.time() > deadline:
+                logger.warning("[MOUTH] Session timeout reached")
+                break
+
             now = time.time()
 
             if _estop_during_motion(buttons, arm, "EMERGENCY_BUTTON_MOUTH_TRACKING"):
@@ -226,6 +247,9 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
             tof_reading = read_tof_cm_safe()
             if tof_reading is not None:
                 last_valid_tof_cm = tof_reading
+                if now - last_tof_print_time >= 0.5:
+                    logger.info("[TOF] Latest distance: %.1f cm", last_valid_tof_cm)
+                    last_tof_print_time = now
 
             ret, frame = cap.read()
             if not ret:
@@ -242,7 +266,9 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                 cx, cy = w // 2, h // 2
                 error_x = mx - cx
                 error_y = my - cy
-                is_centered = abs(error_x) < DEAD_ZONE_PX and abs(error_y) < DEAD_ZONE_PX
+                is_centered = (
+                    abs(error_x) < CENTER_TOLERANCE and abs(error_y) < CENTER_TOLERANCE
+                )
 
                 if is_centered:
                     if center_start_time is None:
@@ -325,6 +351,14 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                 center_start_time = None
                 approach_active = False
                 approach_start_time = None
+
+            if SHOW_MOUTH_PREVIEW:
+                cv2.imshow("Jetson Mouth Tracking", frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), 27):
+                    logger.info("[MOUTH] Preview exit key pressed")
+                    arm.stop("KEY_EXIT")
+                    break
 
             time.sleep(LOOP_DELAY)
 

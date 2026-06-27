@@ -6,8 +6,7 @@ Setup:
   python3 -m venv venv && source venv/bin/activate
   pip install -r requirements.txt
   cp .env.example .env   # edit paths
-  export $(grep -v '^#' .env | xargs)
-  python worker.py
+  python3 worker.py      # loads .env automatically
 """
 
 from __future__ import annotations
@@ -24,6 +23,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 from gpio_buttons import ButtonManager, ButtonPoller
+from feeding_cycle import execute_home
 from robot_motion import execute_command
 from robot_session import (
     advance_selected_section,
@@ -70,7 +70,11 @@ def _load_dotenv() -> None:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
-        value = value.strip().strip('"').strip("'")
+        value = value.strip()
+        # Allow trailing inline comments: VALUE=foo  # note
+        if " #" in value:
+            value = value.split(" #", 1)[0].strip()
+        value = value.strip('"').strip("'")
         if key and key not in os.environ:
             os.environ[key] = value
     _ENV_LOADED = True
@@ -295,6 +299,7 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
 
 
 def main() -> int:
+    os.environ.setdefault("JETSON_MODEL_NAME", "JETSON_ORIN_NANO")
     _load_dotenv()
     raw_cred = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if not raw_cred:

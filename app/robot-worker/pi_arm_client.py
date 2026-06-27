@@ -134,5 +134,5 @@ class PiArmClient:
 
 
 def wait_after_move(seconds: float | None = None) -> None:
-    delay = seconds if seconds is not None else float(os.environ.get("ARM_MOVE_SETTLE", "2.0"))
+    delay = seconds if seconds is not None else float(os.environ.get("ARM_MOVE_SETTLE", "1.0"))
     time.sleep(delay)

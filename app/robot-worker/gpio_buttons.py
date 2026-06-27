@@ -1,7 +1,7 @@
 """
 Physical feed / plate / e-stop buttons on Jetson Orin Nano.
 
-Matches With_Emergency_Stop/main_controller_phase4.py wiring:
+Matches `New_Settings_June26/main_controller_phase4.py` wiring:
   BOARD pin 35 — plate / selection (calibrate)
   BOARD pin 37 — feed (bite cycle)
   BOARD pin 33 — emergency stop (active-low)
