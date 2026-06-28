@@ -7,6 +7,7 @@ export type RobotLiveStatus = {
   last_feed_time?: unknown;
   emergency?: boolean;
   jetson_online?: boolean;
+  updatedAt?: unknown;
 };
 
 export type RobotFeedCounts = {
@@ -16,6 +17,7 @@ export type RobotFeedCounts = {
   /** Legacy field names from early Jetson scripts. */
   eat_press_count?: number;
   total_feed_attempts?: number;
+  updatedAt?: unknown;
 };
 
 export type RobotButtonInput = {
@@ -24,6 +26,7 @@ export type RobotButtonInput = {
   last_pin?: number;
   /** Monotonic counter — one increment per physical feed button press. */
   eat_press_seq?: number;
+  updatedAt?: unknown;
 };
 
 export function robotLiveStatusPath(robotId: string) {

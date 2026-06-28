@@ -33,6 +33,22 @@ def mark_jetson_online(db: firestore.Client, robot_id: str) -> None:
     )
 
 
+def touch_jetson_online(
+    db: firestore.Client,
+    robot_id: str,
+    *,
+    state: str | None = None,
+) -> None:
+    """Heartbeat / keep-alive for care-app live status (merge only)."""
+    payload: dict[str, Any] = {
+        "jetson_online": True,
+        "updatedAt": firestore.SERVER_TIMESTAMP,
+    }
+    if state is not None:
+        payload["state"] = state
+    _live_ref(db, robot_id).set(payload, merge=True)
+
+
 def set_live_state(
     db: firestore.Client,
     robot_id: str,

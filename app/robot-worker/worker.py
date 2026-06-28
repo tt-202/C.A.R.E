@@ -41,6 +41,7 @@ from robot_stats import (
     read_live_phase,
     reset_meal_session,
     set_live_state,
+    touch_jetson_online,
 )
 from emergency_notify import notify_app_backend_emergency
 from estop_hooks import set_estop_callback
@@ -436,6 +437,9 @@ def main() -> int:
     )
     query.on_snapshot(on_snapshot)
 
+    heartbeat_seconds = float(os.environ.get("FIRESTORE_HEARTBEAT_SECONDS", "45"))
+    last_heartbeat = time.monotonic()
+
     try:
         while True:
             if buttons.enabled:
@@ -450,6 +454,10 @@ def main() -> int:
                     handle_gpio_feed(db, rid, buttons)
                 elif buttons.plate_pressed():
                     handle_gpio_plate(db, rid, buttons)
+            now = time.monotonic()
+            if now - last_heartbeat >= heartbeat_seconds:
+                touch_jetson_online(db, rid)
+                last_heartbeat = now
             time.sleep(0.05)
     except KeyboardInterrupt:
         logger.info("stopped")

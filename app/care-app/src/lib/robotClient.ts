@@ -1,4 +1,5 @@
 import type { RobotCommandPayload, RobotCommandType } from "@/lib/robot";
+import type { RobotFirestoreSnapshot } from "@/lib/robotStatusTypes";
 
 const robotEnabled =
   typeof process !== "undefined" &&
@@ -28,4 +29,28 @@ export async function sendRobotCommand(
     throw new Error("robot command failed");
   }
   return (await res.json()) as { commandId: string; robotId: string };
+}
+
+export async function refreshRobotLiveStatus(
+  getIdToken: () => Promise<string>,
+  robotId: string,
+  opts?: { clearHistory?: boolean },
+): Promise<RobotFirestoreSnapshot> {
+  const token = await getIdToken();
+  const res = await fetch("/api/robot/status/refresh", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      robotId,
+      clearHistory: opts?.clearHistory !== false,
+    }),
+  });
+  const data = (await res.json()) as RobotFirestoreSnapshot & { error?: string };
+  if (!res.ok) {
+    throw new Error(data.error ?? "robot status refresh failed");
+  }
+  return data;
 }

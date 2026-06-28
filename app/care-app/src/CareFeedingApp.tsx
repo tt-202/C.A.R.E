@@ -7,6 +7,7 @@ import {
   User,
   ShieldAlert,
   History,
+  RefreshCw,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -56,6 +57,12 @@ import { isFirebaseConfigured } from "@/lib/firebaseClient";
 import { useRobotFirestore } from "@/hooks/useRobotFirestore";
 import { getPublicRobotId } from "@/lib/robot";
 import { feedCountTotal } from "@/lib/robotFirestorePaths";
+import {
+  displayRobotButtons,
+  displayRobotLive,
+  isJetsonEffectivelyOnline,
+} from "@/lib/robotStatusDisplay";
+import { formatRobotStatusAge } from "@/lib/robotStatusTime";
 
 function formatFirestoreTime(value: unknown): string {
   if (!value) return "—";
@@ -136,11 +143,26 @@ export default function CareFeedingApp({
     formatPlannedMealDisplay(upcomingMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule))),
   );
   const robotId = getPublicRobotId();
-  const { live: robotLive, feedCounts: robotFeedCounts, buttonInput: robotButtons, error: robotListenError } =
-    useRobotFirestore({
-      robotId,
-      enabled: !previewMode && isFirebaseConfigured(),
-    });
+  const {
+    live: robotLive,
+    feedCounts: robotFeedCounts,
+    buttonInput: robotButtons,
+    error: robotListenError,
+    refresh: refreshRobotStatus,
+    refreshing: robotStatusRefreshing,
+    lastRefreshedAt: robotStatusLastRefreshed,
+    statusStale: robotStatusStale,
+    clearedStaleOnRefresh: robotClearedStale,
+    clearedHistoryOnRefresh: robotClearedHistory,
+  } = useRobotFirestore({
+    robotId,
+    enabled: !previewMode && isFirebaseConfigured(),
+    getIdToken,
+  });
+
+  const robotJetsonOnline = isJetsonEffectivelyOnline(robotLive);
+  const robotLiveDisplay = displayRobotLive(robotLive);
+  const robotButtonsDisplay = displayRobotButtons(robotButtons, robotLive);
 
   const mealStartedAtRef = useRef<number | null>(null);
   const plannedMealTimeRef = useRef(
@@ -787,56 +809,131 @@ export default function CareFeedingApp({
         {!previewMode && !isUser ? (
           <Card className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] shadow-lg">
             <CardContent className="space-y-3 p-5">
-              <h2 className="text-lg font-bold text-stone-950">Robot live status</h2>
-              <p className="text-sm font-medium text-stone-700">
-                Firestore <span className="font-mono text-stone-900">robots/{robotId}</span> — updates when the Jetson
-                writes stats.
-              </p>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h2 className="text-lg font-bold text-stone-950">Robot live status</h2>
+                  <p className="text-sm font-medium text-stone-700">
+                    Firestore <span className="font-mono text-stone-900">robots/{robotId}</span> — Refresh clears
+                    live status and all feed history counters.
+                  </p>
+                  {robotStatusLastRefreshed ? (
+                    <p className="text-xs font-medium text-stone-600">
+                      Last refreshed {robotStatusLastRefreshed.toLocaleTimeString()}
+                    </p>
+                  ) : null}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={robotStatusRefreshing}
+                  className="rounded-2xl border-2 border-stone-600 bg-white font-semibold text-stone-950 hover:bg-stone-100"
+                  onClick={() => void refreshRobotStatus()}
+                >
+                  <RefreshCw
+                    className={cn("mr-2 h-4 w-4", robotStatusRefreshing && "animate-spin")}
+                    aria-hidden
+                  />
+                  {robotStatusRefreshing ? "Refreshing…" : "Refresh"}
+                </Button>
+              </div>
               {robotListenError ? (
                 <p className="rounded-xl border-2 border-red-700 bg-red-100 px-3 py-2 text-sm font-medium text-red-950">
                   {robotListenError}
                 </p>
               ) : null}
+              {robotClearedHistory ? (
+                <p className="rounded-xl border-2 border-green-800 bg-green-100 px-3 py-2 text-sm font-medium text-green-950">
+                  All robot counters cleared (live session + lifetime feeds + button presses).
+                </p>
+              ) : robotClearedStale ? (
+                <p className="rounded-xl border-2 border-amber-700 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-950">
+                  Stale robot session cleared.
+                </p>
+              ) : robotStatusStale && !robotStatusRefreshing && !robotJetsonOnline ? (
+                <p className="rounded-xl border-2 border-amber-700 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-950">
+                  Robot is offline. Session fields are hidden; lifetime totals below are historical.
+                </p>
+              ) : null}
               <dl className="grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
                 <dt className="font-semibold text-stone-700">Jetson online</dt>
                 <dd className="font-bold text-stone-950">
-                  {robotLive?.jetson_online ? "Yes" : robotLive ? "No" : "Waiting…"}
+                  {robotStatusRefreshing
+                    ? "Refreshing…"
+                    : robotJetsonOnline
+                      ? "Yes"
+                      : robotLive
+                        ? "No"
+                        : "Waiting…"}
+                </dd>
+                <dt className="font-semibold text-stone-700">Last robot update</dt>
+                <dd className="font-bold text-stone-950">
+                  {robotStatusRefreshing ? "—" : formatRobotStatusAge(robotLive?.updatedAt)}
                 </dd>
                 <dt className="font-semibold text-stone-700">Robot state</dt>
-                <dd className="font-bold text-stone-950">{robotLive?.state ?? "—"}</dd>
+                <dd className="font-bold text-stone-950">{robotLiveDisplay?.state ?? "—"}</dd>
                 <dt className="font-semibold text-stone-700">This meal bites</dt>
                 <dd className="font-bold text-stone-950">
-                  {typeof robotLive?.bite_count === "number" ? robotLive.bite_count : 0}
+                  {robotJetsonOnline && typeof robotLiveDisplay?.bite_count === "number"
+                    ? robotLiveDisplay.bite_count
+                    : "—"}
                 </dd>
                 <dt className="font-semibold text-stone-700">Lifetime feeds</dt>
-                <dd className="font-bold text-stone-950">{feedCountTotal(robotFeedCounts)}</dd>
+                <dd className="font-bold text-stone-950">
+                  {robotStatusRefreshing ? "—" : feedCountTotal(robotFeedCounts)}
+                </dd>
                 <dt className="font-semibold text-stone-700">Current section</dt>
                 <dd className="font-bold text-stone-950">
-                  {typeof robotLive?.section === "number" ? robotLive.section : "—"}
+                  {robotJetsonOnline && typeof robotLiveDisplay?.section === "number"
+                    ? robotLiveDisplay.section
+                    : "—"}
                 </dd>
                 <dt className="font-semibold text-stone-700">Emergency</dt>
                 <dd className="font-bold text-stone-950">
-                  {robotLive?.emergency ? "Yes" : robotLive ? "No" : "—"}
+                  {!robotLive
+                    ? "—"
+                    : robotJetsonOnline
+                      ? robotLiveDisplay?.emergency
+                        ? "Yes"
+                        : "No"
+                      : "—"}
                 </dd>
                 <dt className="font-semibold text-stone-700">Successful feeds</dt>
-                <dd className="font-bold text-stone-950">{robotFeedCounts?.successful_feeds ?? "—"}</dd>
+                <dd className="font-bold text-stone-950">
+                  {robotStatusRefreshing ? "—" : (robotFeedCounts?.successful_feeds ?? 0)}
+                </dd>
                 <dt className="font-semibold text-stone-700">Failed feeds</dt>
-                <dd className="font-bold text-stone-950">{robotFeedCounts?.failed_feeds ?? "—"}</dd>
+                <dd className="font-bold text-stone-950">
+                  {robotStatusRefreshing ? "—" : (robotFeedCounts?.failed_feeds ?? 0)}
+                </dd>
                 <dt className="font-semibold text-stone-700">Feed button presses</dt>
                 <dd className="font-bold text-stone-950">
-                  {typeof robotButtons?.eat_press_seq === "number" ? robotButtons.eat_press_seq : "—"}
+                  {robotJetsonOnline && typeof robotButtonsDisplay?.eat_press_seq === "number"
+                    ? robotButtonsDisplay.eat_press_seq
+                    : "—"}
                 </dd>
                 <dt className="font-semibold text-stone-700">Eat pressed</dt>
                 <dd className="font-bold text-stone-950">
-                  {robotButtons?.eat_pressed ? "Yes" : robotButtons ? "No" : "—"}
+                  {!robotButtons
+                    ? "—"
+                    : robotJetsonOnline
+                      ? robotButtonsDisplay?.eat_pressed
+                        ? "Yes"
+                        : "No"
+                      : "—"}
                 </dd>
                 <dt className="font-semibold text-stone-700">Stop pressed</dt>
                 <dd className="font-bold text-stone-950">
-                  {robotButtons?.stop_pressed ? "Yes" : robotButtons ? "No" : "—"}
+                  {!robotButtons
+                    ? "—"
+                    : robotJetsonOnline
+                      ? robotButtonsDisplay?.stop_pressed
+                        ? "Yes"
+                        : "No"
+                      : "—"}
                 </dd>
                 <dt className="col-span-2 font-semibold text-stone-700">Last feed</dt>
                 <dd className="col-span-2 font-bold text-stone-950">
-                  {formatFirestoreTime(robotLive?.last_feed_time)}
+                  {robotJetsonOnline ? formatFirestoreTime(robotLiveDisplay?.last_feed_time) : "—"}
                 </dd>
               </dl>
             </CardContent>
