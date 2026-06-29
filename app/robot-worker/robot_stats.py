@@ -57,6 +57,8 @@ def set_live_state(
     emergency: bool = False,
     bite_count: int | None = None,
     section: int | None = None,
+    plate_yolo_status: str | None = None,
+    spoon_yolo_status: str | None = None,
 ) -> None:
     payload: dict[str, Any] = {
         "state": state,
@@ -68,8 +70,30 @@ def set_live_state(
         payload["bite_count"] = bite_count
     if section is not None:
         payload["section"] = section
+    if plate_yolo_status is not None:
+        payload["plate_yolo_status"] = plate_yolo_status
+    if spoon_yolo_status is not None:
+        payload["spoon_yolo_status"] = spoon_yolo_status
     if state == "FEEDING":
         payload["last_feed_time"] = firestore.SERVER_TIMESTAMP
+    _live_ref(db, robot_id).set(payload, merge=True)
+
+
+def set_yolo_status(
+    db: firestore.Client,
+    robot_id: str,
+    *,
+    plate_status: str | None = None,
+    spoon_status: str | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "jetson_online": True,
+        "updatedAt": firestore.SERVER_TIMESTAMP,
+    }
+    if plate_status is not None:
+        payload["plate_yolo_status"] = str(plate_status)
+    if spoon_status is not None:
+        payload["spoon_yolo_status"] = str(spoon_status)
     _live_ref(db, robot_id).set(payload, merge=True)
 
 

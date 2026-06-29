@@ -64,6 +64,15 @@ import {
 } from "@/lib/robotStatusDisplay";
 import { formatRobotStatusAge } from "@/lib/robotStatusTime";
 
+function formatYoloPlateLabel(value: string | undefined): string {
+  if (!value) return "—";
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "full") return "Full";
+  if (normalized === "empty") return "Empty";
+  if (normalized === "unknown") return "Unknown";
+  return value;
+}
+
 function formatFirestoreTime(value: unknown): string {
   if (!value) return "—";
   if (typeof value === "object" && value !== null && "toDate" in value) {
@@ -132,7 +141,7 @@ export default function CareFeedingApp({
   const [activeAlert, setActiveAlert] = useState<{
     title?: string;
     body: string;
-    severity: "info" | "success" | "emergency";
+    severity: "info" | "success" | "emergency" | "warning";
   } | null>(null);
   const [mealHistory, setMealHistory] = useState<MealHistoryEntry[]>([]);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -219,7 +228,7 @@ export default function CareFeedingApp({
     (payload: {
       title?: string;
       body: string;
-      severity?: "info" | "success" | "emergency";
+      severity?: "info" | "success" | "emergency" | "warning";
       alertType?: string;
     }) => {
       const key = inAppAlertKey({
@@ -262,7 +271,14 @@ export default function CareFeedingApp({
       handleInAppAlert({
         title: payload.title,
         body: payload.body,
-        severity: payload.alertType === "meal_emergency" ? "emergency" : payload.alertType === "meal_finished" ? "success" : "info",
+        severity:
+          payload.alertType === "meal_emergency"
+            ? "emergency"
+            : payload.alertType === "plate_empty"
+              ? "warning"
+              : payload.alertType === "meal_finished"
+                ? "success"
+                : "info",
         alertType: payload.alertType,
       }),
   });
@@ -869,6 +885,18 @@ export default function CareFeedingApp({
                 <dd className="font-bold text-stone-950">
                   {robotStatusRefreshing ? "—" : formatRobotStatusAge(robotLive?.updatedAt)}
                 </dd>
+                <dt className="font-semibold text-stone-700">Plate (YOLO)</dt>
+                <dd className="font-bold text-stone-950">
+                  {robotStatusRefreshing
+                    ? "—"
+                    : formatYoloPlateLabel(robotLive?.plate_yolo_status)}
+                </dd>
+                <dt className="font-semibold text-stone-700">Spoon (YOLO)</dt>
+                <dd className="font-bold text-stone-950">
+                  {robotStatusRefreshing
+                    ? "—"
+                    : formatYoloPlateLabel(robotLive?.spoon_yolo_status)}
+                </dd>
                 <dt className="font-semibold text-stone-700">Robot state</dt>
                 <dd className="font-bold text-stone-950">{robotLiveDisplay?.state ?? "—"}</dd>
                 <dt className="font-semibold text-stone-700">This meal bites</dt>
@@ -995,7 +1023,9 @@ export default function CareFeedingApp({
                 ? "border-red-700 bg-red-100 text-red-950"
                 : activeAlert.severity === "success"
                   ? "border-green-700 bg-green-100 text-green-950"
-                  : "border-amber-400 bg-amber-200 text-amber-950",
+                  : activeAlert.severity === "warning"
+                    ? "border-amber-700 bg-amber-100 text-amber-950"
+                    : "border-amber-400 bg-amber-200 text-amber-950",
             )}
             role="alert"
           >

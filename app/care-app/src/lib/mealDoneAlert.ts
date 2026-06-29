@@ -19,7 +19,17 @@ export type MealEmergencyAlertPayload = {
   plannedMealTime: string;
 };
 
-export type CareAlertPayload = MealDoneAlertPayload | MealEmergencyAlertPayload;
+export type PlateEmptyAlertPayload = {
+  type: "plate_empty";
+  finishedAtMs: number;
+  careRecipientName: string;
+  caregiverName: string;
+  robotId: string;
+  section: number;
+  plateStatus: string;
+};
+
+export type CareAlertPayload = MealDoneAlertPayload | MealEmergencyAlertPayload | PlateEmptyAlertPayload;
 
 export function formatMealDoneNotification(alert: MealDoneAlertPayload): {
   title: string;
@@ -51,9 +61,24 @@ export function formatMealEmergencyNotification(alert: MealEmergencyAlertPayload
   return { title, body };
 }
 
+export function formatPlateEmptyNotification(alert: PlateEmptyAlertPayload): {
+  title: string;
+  body: string;
+} {
+  const name = alert.careRecipientName || "User";
+  const title = `C.A.R.E — Plate empty (${name})`;
+  const sectionPart =
+    alert.section >= 1 && alert.section <= 4 ? ` Section ${alert.section} selected.` : "";
+  const body = `YOLO detected an empty plate for ${name}.${sectionPart} Please refill the plate.`;
+  return { title, body };
+}
+
 export function formatCareAlertNotification(alert: CareAlertPayload): { title: string; body: string } {
   if (alert.type === "meal_emergency") {
     return formatMealEmergencyNotification(alert);
+  }
+  if (alert.type === "plate_empty") {
+    return formatPlateEmptyNotification(alert);
   }
   return formatMealDoneNotification(alert);
 }
@@ -99,8 +124,23 @@ export function parseMealEmergencyAlert(data: unknown): MealEmergencyAlertPayloa
   };
 }
 
+export function parsePlateEmptyAlert(data: unknown): PlateEmptyAlertPayload | null {
+  if (!data || typeof data !== "object") return null;
+  const row = data as Record<string, unknown>;
+  if (row.type !== "plate_empty" || typeof row.finishedAtMs !== "number") return null;
+  return {
+    type: "plate_empty",
+    finishedAtMs: row.finishedAtMs,
+    careRecipientName: typeof row.careRecipientName === "string" ? row.careRecipientName : "",
+    caregiverName: typeof row.caregiverName === "string" ? row.caregiverName : "",
+    robotId: typeof row.robotId === "string" ? row.robotId : "",
+    section: typeof row.section === "number" ? row.section : 0,
+    plateStatus: typeof row.plateStatus === "string" ? row.plateStatus : "empty",
+  };
+}
+
 export function parseCareAlert(data: unknown): CareAlertPayload | null {
-  return parseMealDoneAlert(data) ?? parseMealEmergencyAlert(data);
+  return parseMealDoneAlert(data) ?? parseMealEmergencyAlert(data) ?? parsePlateEmptyAlert(data);
 }
 
 export function parseMealDoneAlert(data: unknown): MealDoneAlertPayload | null {

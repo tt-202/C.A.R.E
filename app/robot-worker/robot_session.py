@@ -19,6 +19,11 @@ system_state = "IDLE"
 feed_cycle_state = "END_FEED"
 feeding_active = False
 
+# YOLO / arm view tracking (CARE_YOLO_Plate_RecheckAfterFeed_Jetson)
+current_robot_view = "unknown"
+plate_food_status = "unknown"
+_spoon_failed_scoops: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
+
 
 def set_system_state(new_state: str, reason: str | None = None) -> None:
     global system_state
@@ -87,8 +92,58 @@ def end_feed_cycle(reason: str = "FEED_COMPLETE") -> None:
     with _lock:
         feeding_active = False
         feed_cycle_state = "END_FEED"
+    invalidate_plate_food_cache(f"END_FEED:{reason}")
+    set_robot_view("home")
     set_system_state("IDLE", reason)
     logger.info("[FEED_CYCLE] END_FEED | reason=%s", reason)
+
+
+def get_robot_view() -> str:
+    with _lock:
+        return current_robot_view
+
+
+def set_robot_view(view: str) -> None:
+    global current_robot_view
+    with _lock:
+        current_robot_view = str(view)
+
+
+def get_plate_food_status() -> str:
+    with _lock:
+        return plate_food_status
+
+
+def set_plate_food_status(status: str) -> None:
+    global plate_food_status
+    with _lock:
+        plate_food_status = str(status).strip().lower()
+
+
+def invalidate_plate_food_cache(reason: str = "PLATE_CACHE_INVALIDATED") -> None:
+    global plate_food_status
+    with _lock:
+        plate_food_status = "unknown"
+    logger.info("[PLATE_CACHE] invalidated | %s", reason)
+
+
+def spoon_failed_count(section: int) -> int:
+    with _lock:
+        return int(_spoon_failed_scoops.get(int(section), 0))
+
+
+def increment_spoon_failed(section: int) -> int:
+    global _spoon_failed_scoops
+    section = int(section)
+    with _lock:
+        _spoon_failed_scoops[section] = int(_spoon_failed_scoops.get(section, 0)) + 1
+        return _spoon_failed_scoops[section]
+
+
+def reset_spoon_failed(section: int) -> None:
+    global _spoon_failed_scoops
+    with _lock:
+        _spoon_failed_scoops[int(section)] = 0
 
 
 def mark_emergency_state(reason: str) -> None:

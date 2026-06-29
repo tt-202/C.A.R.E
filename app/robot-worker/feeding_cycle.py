@@ -31,13 +31,20 @@ from robot_session import (
     is_feeding_active,
     mark_apriltag_scan_done,
     mark_emergency_state,
+    set_robot_view,
     set_system_state,
     start_feed_cycle,
 )
 from tof_subprocess import read_tof_cm_safe, start_tof_reader, stop_tof_reader, use_fake_tof
 from lcd_gui import GUI_MESSAGES, update_gui_state
+from yolo_gates import (
+    ensure_plate_has_food_before_feed,
+    run_plate_yolo_check,
+    run_spoon_yolo_check_after_scoop,
+)
 
 if TYPE_CHECKING:
+    from firebase_admin import firestore
     from gpio_buttons import ButtonManager
 
 logger = logging.getLogger(__name__)
@@ -101,6 +108,7 @@ def _home_arm(arm: PiArmClient, reason: str) -> None:
         reason,
     )
     arm.home(reason)
+    set_robot_view("home")
 
 
 def _estop_during_motion(buttons: ButtonManager | None, arm: PiArmClient, reason: str) -> bool:
@@ -127,6 +135,7 @@ def run_apriltag_selection_phase(arm: PiArmClient, *, preview: bool = False) -> 
         return True
 
     arm.view_selection()
+    set_robot_view("selection")
     time.sleep(VIEW_SETTLE_SECONDS)
 
     update_gui_state(
@@ -170,7 +179,12 @@ def run_apriltag_selection_phase(arm: PiArmClient, *, preview: bool = False) -> 
     return True
 
 
-def calibrate_plate(*, preview: bool = False) -> dict:
+def calibrate_plate(
+    *,
+    preview: bool = False,
+    db: firestore.Client | None = None,
+    robot_id: str | None = None,
+) -> dict:
     if _dry_run():
         logger.info("DRY_RUN calibrate_plate")
         time.sleep(1.0)
@@ -180,6 +194,8 @@ def calibrate_plate(*, preview: bool = False) -> dict:
     with PiArmClient() as arm:
         arm.ping()
         ok = run_apriltag_selection_phase(arm, preview=preview)
+        if ok:
+            run_plate_yolo_check(arm, db, robot_id, already_in_selection_view=True)
     if not ok:
         raise RuntimeError("Plate calibration / AprilTag scan failed")
 
@@ -218,6 +234,7 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
             return False
 
     arm.view_mouth()
+    set_robot_view("mouth")
     time.sleep(VIEW_SETTLE_SECONDS)
 
     update_gui_state(
@@ -600,41 +617,56 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
     return feeding_completed_and_homed
 
 
-def execute_next_bite(section_num: int | None = None, buttons: ButtonManager | None = None) -> None:
+def execute_next_bite(
+    section_num: int | None = None,
+    buttons: ButtonManager | None = None,
+    *,
+    db: firestore.Client | None = None,
+    robot_id: str | None = None,
+) -> bool:
+    """
+    Full bite cycle with YOLO plate/spoon gates.
+    Returns True if a bite completed successfully (mouth + HOME).
+    """
     if buttons is not None and buttons.is_emergency_latched():
         logger.warning("Skipping bite — emergency latched")
-        return
+        return False
 
     section = int(section_num if section_num is not None else get_selected_section())
     if section < 1 or section > 4:
         raise ValueError(f"section must be 1-4, got {section}")
 
-    start_feed_cycle(section)
-    logger.info("=== BITE START section=%s ===", section)
-
-    update_gui_state(
-        "feeding",
-        GUI_MESSAGES["feed_start"].format(section=section),
-        selected_plate_section=section,
-        connected=True,
-        error="NONE",
-        force=True,
-    )
-
     if _dry_run():
-        logger.info("DRY_RUN next_bite: SCOOP → VIEW_MOUTH → mouth track → HOME")
+        start_feed_cycle(section)
+        logger.info("DRY_RUN next_bite: plate gate → SCOOP → spoon → mouth → HOME")
         time.sleep(2.0)
         end_feed_cycle("FEED_COMPLETE_HOME_DONE")
         logger.info("=== BITE DONE (dry run) ===")
-        return
+        return True
 
     try:
         with PiArmClient() as arm:
             logger.info("Pi ping: %s", arm.ping())
             update_gui_state("idle", "Connected to Raspberry Pi arm server", connected=True, force=True)
 
+            if not ensure_plate_has_food_before_feed(arm, db, robot_id):
+                logger.warning("FEED blocked — plate YOLO did not pass")
+                return False
+
+            start_feed_cycle(section)
+            logger.info("=== BITE START section=%s ===", section)
+
+            update_gui_state(
+                "feeding",
+                GUI_MESSAGES["feed_start"].format(section=section),
+                selected_plate_section=section,
+                connected=True,
+                error="NONE",
+                force=True,
+            )
+
             if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_SCOOP"):
-                return
+                return False
 
             logger.info("Step 1/3: SCOOP section %s", section)
             update_gui_state(
@@ -655,15 +687,32 @@ def execute_next_bite(section_num: int | None = None, buttons: ButtonManager | N
                 force=True,
             )
 
+            if not run_spoon_yolo_check_after_scoop(section, db, robot_id):
+                _home_arm(arm, "SPOON_EMPTY_AFTER_SCOOP_RETURN_HOME")
+                end_feed_cycle("SPOON_EMPTY_AFTER_SCOOP")
+                update_gui_state(
+                    "idle",
+                    "Spoon check stopped feeding. Press FEED again to retry, or SELECT another section.",
+                    selected_plate_section=section,
+                    connected=True,
+                    error="NONE",
+                    force=True,
+                )
+                return False
+
             if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_MOUTH"):
-                return
+                return False
 
             logger.info("Step 2/3: mouth tracking + ToF approach")
-            run_mouth_feed_session(arm, buttons)
+            completed = run_mouth_feed_session(arm, buttons)
 
             if buttons is not None and buttons.is_emergency_latched():
                 logger.warning("=== BITE ABORTED (emergency) section=%s ===", section)
-                return
+                return False
+
+            if completed:
+                logger.info("=== BITE DONE section=%s ===", section)
+            return completed
 
     except Exception as exc:
         logger.exception("Bite failed for section %s", section)
@@ -706,7 +755,18 @@ def execute_next_bite(section_num: int | None = None, buttons: ButtonManager | N
                 )
         raise
 
-    logger.info("=== BITE DONE section=%s ===", section)
+    return False
+
+
+def handle_plate_select_after_scan(
+    arm: PiArmClient,
+    db: firestore.Client | None,
+    robot_id: str | None,
+) -> int:
+    """SELECT after scan: YOLO plate check from home, or cycle section at plate view."""
+    from yolo_gates import handle_plate_button_after_scan
+
+    return handle_plate_button_after_scan(arm, db, robot_id)
 
 
 def execute_stop(reason: str = "STOP") -> None:

@@ -1,5 +1,7 @@
 /** Firestore paths under robots/{robotId}/… written by the Jetson worker. */
 
+export type YoloPlateStatus = "full" | "empty" | "unknown";
+
 export type RobotLiveStatus = {
   state?: string;
   bite_count?: number;
@@ -8,6 +10,8 @@ export type RobotLiveStatus = {
   emergency?: boolean;
   jetson_online?: boolean;
   updatedAt?: unknown;
+  plate_yolo_status?: YoloPlateStatus | string;
+  spoon_yolo_status?: YoloPlateStatus | string;
 };
 
 export type RobotFeedCounts = {

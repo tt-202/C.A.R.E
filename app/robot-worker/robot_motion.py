@@ -14,6 +14,8 @@ from feeding_cycle import (
 from robot_session import is_feeding_active
 
 if TYPE_CHECKING:
+    from firebase_admin import firestore
+
     from gpio_buttons import ButtonManager
 
 logger = logging.getLogger(__name__)
@@ -25,33 +27,35 @@ def execute_command(
     cmd: str,
     payload: dict[str, Any] | None,
     buttons: ButtonManager | None = None,
-) -> None:
+    *,
+    db: firestore.Client | None = None,
+    robot_id: str | None = None,
+) -> bool:
     if cmd not in ALLOWED:
         raise ValueError(f"unsupported cmd: {cmd}")
 
     if cmd == "home":
         execute_home()
-        return
+        return True
 
     if cmd in ("pause", "stop"):
         execute_stop()
-        return
+        return False
 
     if cmd == "calibrate_plate":
         if is_feeding_active():
             logger.warning("calibrate_plate ignored — feed cycle active")
-            return
-        calibrate_plate(preview=False)
-        return
+            return False
+        calibrate_plate(preview=False, db=db, robot_id=robot_id)
+        return True
 
     if cmd == "next_bite":
         if is_feeding_active():
             logger.warning("next_bite ignored — feed cycle already active")
-            return
+            return False
         section = 1
         if isinstance(payload, dict) and isinstance(payload.get("sectionNum"), int):
             section = payload["sectionNum"]
-        execute_next_bite(section, buttons=buttons)
-        return
+        return execute_next_bite(section, buttons=buttons, db=db, robot_id=robot_id)
 
     raise ValueError(f"unhandled cmd: {cmd}")

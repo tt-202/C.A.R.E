@@ -2,11 +2,13 @@ import {
   getLatestCareAlert,
   publishMealEmergencyAlert,
   publishMealFinishedAlert,
+  publishPlateEmptyAlert,
   type CareAlert,
 } from "@/lib/careAlertsFirestore";
 import {
   formatMealDoneNotification,
   formatMealEmergencyNotification,
+  formatPlateEmptyNotification,
 } from "@/lib/mealDoneAlert";
 import { listCaregiverFirebaseUidsForPair } from "@/lib/carePair";
 import { sendPushToUsers } from "@/lib/fcmSend";
@@ -19,6 +21,40 @@ export type CaregiverMealAlertInput = {
   plannedMealTime: string;
   emergency: boolean;
 };
+
+export type CaregiverPlateAlertInput = {
+  carePairId: string;
+  careRecipientName: string;
+  caregiverName: string;
+  robotId: string;
+  section: number;
+  plateStatus: string;
+};
+
+/** Write Firestore alert + FCM push when Jetson YOLO detects empty plate. */
+export async function publishAndPushCaregiverPlateAlert(
+  input: CaregiverPlateAlertInput,
+): Promise<CareAlert> {
+  const alert = await publishPlateEmptyAlert(input.carePairId, {
+    careRecipientName: input.careRecipientName,
+    caregiverName: input.caregiverName,
+    robotId: input.robotId,
+    section: input.section,
+    plateStatus: input.plateStatus,
+  });
+
+  const { title, body } = formatPlateEmptyNotification(alert);
+
+  const caregiverUids = await listCaregiverFirebaseUidsForPair(input.carePairId);
+  await sendPushToUsers(caregiverUids, {
+    title,
+    body,
+    tag: `${alert.type}-${alert.finishedAtMs}`,
+    alertType: alert.type,
+  });
+
+  return alert;
+}
 
 /** Write Firestore alert + FCM push to all caregivers on the pair. */
 export async function publishAndPushCaregiverMealAlert(

@@ -19,7 +19,17 @@ export type MealEmergencyAlert = {
   plannedMealTime: string;
 };
 
-export type CareAlert = MealFinishedAlert | MealEmergencyAlert;
+export type PlateEmptyAlert = {
+  type: "plate_empty";
+  finishedAtMs: number;
+  careRecipientName: string;
+  caregiverName: string;
+  robotId: string;
+  section: number;
+  plateStatus: string;
+};
+
+export type CareAlert = MealFinishedAlert | MealEmergencyAlert | PlateEmptyAlert;
 
 function pairLatestAlertRef(carePairId: string) {
   return getFirebaseAdminFirestore()
@@ -44,6 +54,18 @@ async function publishCareAlert(carePairId: string, alert: CareAlert): Promise<C
     updatedAt: FieldValue.serverTimestamp(),
   });
   return alert;
+}
+
+export async function publishPlateEmptyAlert(
+  carePairId: string,
+  data: Omit<PlateEmptyAlert, "type" | "finishedAtMs">,
+): Promise<PlateEmptyAlert> {
+  const alert: PlateEmptyAlert = {
+    type: "plate_empty",
+    finishedAtMs: Date.now(),
+    ...data,
+  };
+  return publishCareAlert(carePairId, alert) as Promise<PlateEmptyAlert>;
 }
 
 export async function publishMealFinishedAlert(
@@ -100,6 +122,18 @@ function parseAlertDoc(data: FirebaseFirestore.DocumentData | undefined): CareAl
       caregiverName: partial.caregiverName ?? "",
       bitesTotal: partial.bitesTotal ?? 0,
       plannedMealTime: partial.plannedMealTime ?? "",
+    };
+  }
+
+  if (partial.type === "plate_empty") {
+    return {
+      type: "plate_empty",
+      finishedAtMs: partial.finishedAtMs,
+      careRecipientName: partial.careRecipientName ?? "",
+      caregiverName: partial.caregiverName ?? "",
+      robotId: typeof partial.robotId === "string" ? partial.robotId : "",
+      section: typeof partial.section === "number" ? partial.section : 0,
+      plateStatus: typeof partial.plateStatus === "string" ? partial.plateStatus : "empty",
     };
   }
 

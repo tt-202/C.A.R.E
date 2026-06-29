@@ -21,7 +21,7 @@ export type CaregiverMealAlertPayload = {
   title: string;
   body: string;
   finishedAtMs: number;
-  severity: "success" | "emergency";
+  severity: "success" | "emergency" | "warning";
 };
 
 type Options = {
@@ -72,7 +72,12 @@ export function useCaregiverMealAlerts({ profileUid, enabled, getIdToken, onAler
       saveLastSeen(profileUid, alert.finishedAtMs);
 
       const { title, body } = formatCareAlertNotification(alert);
-      const severity = alert.type === "meal_emergency" ? "emergency" : "success";
+      const severity =
+        alert.type === "meal_emergency"
+          ? "emergency"
+          : alert.type === "plate_empty"
+            ? "warning"
+            : "success";
       onAlertRef.current?.({ title, body, finishedAtMs: alert.finishedAtMs, severity });
       if (document.visibilityState !== "visible") {
         showBrowserNotification(title, body, careAlertNotificationTag(alert));

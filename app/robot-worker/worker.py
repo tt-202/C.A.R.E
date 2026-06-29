@@ -26,7 +26,6 @@ from gpio_buttons import ButtonManager, ButtonPoller
 from feeding_cycle import execute_home
 from robot_motion import execute_command
 from robot_session import (
-    advance_selected_section,
     end_feed_cycle,
     get_selected_section,
     is_apriltag_scan_done,
@@ -164,12 +163,18 @@ def handle_gpio_feed(db: firestore.Client, rid: str, buttons: ButtonManager) -> 
 
     section = get_selected_section()
     try:
-        execute_command("next_bite", {"sectionNum": section}, buttons=buttons)
+        completed = execute_command(
+            "next_bite",
+            {"sectionNum": section},
+            buttons=buttons,
+            db=db,
+            robot_id=rid,
+        )
     except Exception:
         logger.exception("GPIO feed failed")
         record_failed_feed(db, rid)
         return
-    if not buttons.is_emergency_latched() and not is_feeding_active():
+    if completed and not buttons.is_emergency_latched() and not is_feeding_active():
         after_successful_feed(db, rid, section, pin=buttons.feed_pin)
         logger.info("GPIO feed button → bite section=%s", section)
 
@@ -192,20 +197,17 @@ def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) ->
         if not is_apriltag_scan_done():
             set_live_state(db, rid, state="CALIBRATING", section=get_selected_section(), emergency=False)
             logger.info("GPIO plate button → AprilTag plate scan")
-            execute_command("calibrate_plate", None, buttons=buttons)
+            execute_command("calibrate_plate", None, buttons=buttons, db=db, robot_id=rid)
             set_live_state(db, rid, state="IDLE", section=get_selected_section(), emergency=False)
             logger.info("Plate scan done — FEED is now enabled")
         else:
-            section = advance_selected_section()
+            from feeding_cycle import handle_plate_select_after_scan
+            from pi_arm_client import PiArmClient
+
+            with PiArmClient() as arm:
+                arm.ping()
+                section = handle_plate_select_after_scan(arm, db, rid)
             set_live_state(db, rid, state="IDLE", section=section, emergency=False)
-            update_gui_state(
-                "selection",
-                GUI_MESSAGES["select_section"].format(section=section),
-                selected_plate_section=section,
-                connected=True,
-                error="NONE",
-                force=True,
-            )
             logger.info("GPIO plate button → selected section %s", section)
     except Exception:
         logger.exception("GPIO plate / selection failed")
@@ -331,13 +333,15 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
     payload = data.get("payload")
     rid = robot_id()
     try:
-        execute_command(
+        completed = execute_command(
             str(cmd),
             payload if isinstance(payload, dict) else None,
             buttons=_active_buttons,
+            db=db,
+            robot_id=rid,
         )
         finish_command(ref, ok=True)
-        if cmd == "next_bite":
+        if cmd == "next_bite" and completed:
             section = get_selected_section()
             if isinstance(payload, dict) and isinstance(payload.get("sectionNum"), int):
                 section = payload["sectionNum"]
