@@ -97,6 +97,47 @@ python3 run_apriltag_scan.py --preview
 
 Scoop trajectories and arm poses: `app/pi-server/pi_arm_server.py`
 
+## YOLO plate/spoon checks
+
+Requires `pip install ultralytics`. Plate and spoon can use **different** model files:
+
+| File | Default use |
+|------|-------------|
+| `best.engine` | Plate check (TensorRT, fast on Jetson) |
+| `bestest.pt` | Spoon check (after SCOOP) |
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `YOLO_PLATE_MODEL_PATH` | `best.engine` | Weights for plate gate |
+| `YOLO_SPOON_MODEL_PATH` | `bestest.pt` | Weights for spoon gate |
+| `YOLO_MODEL_PATH` | — | Optional override for both if per-target paths unset |
+| `ENABLE_YOLO_CHECKS` | `true` | Run plate/spoon gate logic (keep `true` for real YOLO and manual overrides) |
+| `FORCE_PLATE_STATUS` | `auto` | `auto` = real YOLO; `full` / `empty` / `unknown` = force plate result |
+| `FORCE_SPOON_STATUS` | `auto` | `auto` = real YOLO; `full` / `empty` / `unknown` = force spoon result |
+| `YOLO_FAIL_OPEN` | `false` | If `true`, `unknown` plate/spoon may pass the gate |
+| `SHOW_YOLO_PREVIEW` | `false` | OpenCV window during YOLO scan |
+
+**Real YOLO testing:**
+
+```env
+ENABLE_YOLO_CHECKS=true
+DRY_RUN=false
+YOLO_PLATE_MODEL_PATH=best.engine
+YOLO_SPOON_MODEL_PATH=bestest.pt
+FORCE_PLATE_STATUS=auto
+FORCE_SPOON_STATUS=auto
+```
+
+**Force plate empty (test blocked feed + caregiver alert):**
+
+```env
+ENABLE_YOLO_CHECKS=true
+FORCE_PLATE_STATUS=empty
+FORCE_SPOON_STATUS=auto
+```
+
+Invalid force values (e.g. `test`) are treated as `auto`. `ENABLE_YOLO_CHECKS=false` with both forces `auto` bypasses gates (legacy).
+
 ## Troubleshooting (Jetson)
 
 ### Arm stops after SELECT + FEED and does not return HOME

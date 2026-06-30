@@ -687,6 +687,9 @@ def execute_next_bite(
                 force=True,
             )
 
+            # Let arm/camera settle so spoon is in frame before YOLO scan.
+            time.sleep(float(os.environ.get("SCOOP_YOLO_SETTLE_SECONDS", "1.5")))
+
             if not run_spoon_yolo_check_after_scoop(section, db, robot_id):
                 _home_arm(arm, "SPOON_EMPTY_AFTER_SCOOP_RETURN_HOME")
                 end_feed_cycle("SPOON_EMPTY_AFTER_SCOOP")

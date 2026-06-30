@@ -7,7 +7,8 @@ This patch keeps the spoon check after SCOOP and now adds plate empty/full
 checking when the arm is in the selection/plate-view angle.
 
 Expected files/location:
-  - Put best.engine in this same folder, or edit MODEL_PATH.
+  - Plate: best.engine (or YOLO_PLATE_MODEL_PATH)
+  - Spoon: bestest.pt (or YOLO_SPOON_MODEL_PATH)
   - Plug in the USB camera before running.
 
 Standalone tests:
@@ -18,14 +19,58 @@ Standalone tests:
 
 from pathlib import Path
 import argparse
+import os
 import time
 
 from ultralytics import YOLO
 import cv2
 
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_PATH = str(BASE_DIR / "best.engine")
 WINDOW_NAME = "USB YOLO Check"
+
+# Plate and spoon can use different weights (e.g. best.engine + bestest.pt).
+_PLATE_MODEL_CANDIDATES = ("best.engine")
+_SPOON_MODEL_CANDIDATES = ("bestest.pt", "best.engine")
+
+
+def _resolve_path_from_env(env_key: str, candidates: tuple[str, ...]) -> str:
+    """Resolve one model file: per-target env, then YOLO_MODEL_PATH, then first existing candidate."""
+    for key in (env_key, "YOLO_MODEL_PATH"):
+        override = os.environ.get(key, "").strip()
+        if not override:
+            continue
+        path = Path(override)
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        if path.is_file():
+            return str(path)
+        raise FileNotFoundError(f"{key} not found: {path}")
+
+    for name in candidates:
+        path = BASE_DIR / name
+        if path.is_file():
+            return str(path)
+
+    raise FileNotFoundError(
+        f"No YOLO model for {env_key} in {BASE_DIR}. "
+        f"Tried {candidates}; set {env_key} or YOLO_MODEL_PATH in .env"
+    )
+
+
+def resolve_plate_model_path() -> str:
+    return _resolve_path_from_env("YOLO_PLATE_MODEL_PATH", _PLATE_MODEL_CANDIDATES)
+
+
+def resolve_spoon_model_path() -> str:
+    return _resolve_path_from_env("YOLO_SPOON_MODEL_PATH", _SPOON_MODEL_CANDIDATES)
+
+
+def default_model_path(target: str = "plate") -> str:
+    target = str(target).strip().lower()
+    if target == "spoon":
+        return resolve_spoon_model_path()
+    return resolve_plate_model_path()
+
 
 CAMERA_ID = "/dev/video0"
 CAMERA_WIDTH = 640
@@ -33,15 +78,16 @@ CAMERA_HEIGHT = 480
 CAMERA_FPS = 30
 CAMERA_FORMAT = "MJPG"
 
-CONFIDENCE = 0.50
-SCAN_SECONDS = 2.0
-MIN_VOTES = 2
+CONFIDENCE = float(os.environ.get("YOLO_CONFIDENCE", "0.50"))
+SCAN_SECONDS = float(os.environ.get("YOLO_SCAN_SECONDS", "2.0"))
+MIN_VOTES = int(os.environ.get("YOLO_MIN_VOTES", "2"))
 
 # Update these names after checking the printed model.names on the Jetson.
 # These aliases are intentionally broad so common naming variations still work.
 PLATE_EMPTY_CLASSES = {
     "empty_plate", "plate_empty", "empty plate", "plate-empty",
     "emptyplate", "plate no food", "no_food_plate", "plate_without_food",
+    "empty plate", "plate without food",
 }
 PLATE_FULL_CLASSES = {
     "full_plate", "plate_full", "plate with food", "plate-food",
@@ -51,6 +97,7 @@ PLATE_FULL_CLASSES = {
 SPOON_EMPTY_CLASSES = {
     "empty_spoon", "spoon_empty", "empty spoon", "spoon-empty",
     "emptyspoon", "spoon no food", "no_food_spoon", "spoon_without_food",
+    "empty spoon", "spoon without food",
 }
 SPOON_FULL_CLASSES = {
     "full_spoon", "spoon_full", "spoon with food", "spoon-food",
@@ -85,8 +132,9 @@ def open_usb_camera():
 
 
 class CAREYoloDetector:
-    def __init__(self, model_path=MODEL_PATH, confidence=CONFIDENCE):
-        self.model_path = str(model_path)
+    def __init__(self, model_path=None, confidence=CONFIDENCE, target: str = "plate"):
+        self.target = str(target).strip().lower()
+        self.model_path = str(model_path or default_model_path(self.target))
         self.confidence = float(confidence)
         self.model = None
 
@@ -95,9 +143,10 @@ class CAREYoloDetector:
             return
         if not Path(self.model_path).exists():
             raise FileNotFoundError(
-                f"YOLO model not found: {self.model_path}. Copy best.engine into this folder."
+                f"YOLO model not found: {self.model_path}. "
+                "Set YOLO_PLATE_MODEL_PATH / YOLO_SPOON_MODEL_PATH in .env"
             )
-        print(f"Loading YOLO model: {self.model_path}", flush=True)
+        print(f"Loading YOLO model ({self.target}): {self.model_path}", flush=True)
         self.model = YOLO(self.model_path, task="detect")
         print("Model class names:", flush=True)
         print(self.model.names, flush=True)
@@ -228,22 +277,35 @@ class CAREYoloDetector:
             cv2.destroyAllWindows()
 
 
-_detector = None
+_plate_detector = None
+_spoon_detector = None
+
+
+def get_plate_detector() -> CAREYoloDetector:
+    global _plate_detector
+    if _plate_detector is None:
+        _plate_detector = CAREYoloDetector(target="plate")
+    return _plate_detector
+
+
+def get_spoon_detector() -> CAREYoloDetector:
+    global _spoon_detector
+    if _spoon_detector is None:
+        _spoon_detector = CAREYoloDetector(target="spoon")
+    return _spoon_detector
 
 
 def get_detector():
-    global _detector
-    if _detector is None:
-        _detector = CAREYoloDetector()
-    return _detector
+    """Legacy alias — returns plate detector."""
+    return get_plate_detector()
 
 
 def check_spoon_state(preview=False):
-    return get_detector().scan_spoon(preview=preview)
+    return get_spoon_detector().scan_spoon(preview=preview)
 
 
 def check_plate_state(preview=False):
-    return get_detector().scan_plate(preview=preview)
+    return get_plate_detector().scan_plate(preview=preview)
 
 
 def main():
@@ -252,13 +314,12 @@ def main():
     parser.add_argument("--preview", action="store_true")
     args = parser.parse_args()
 
-    detector = CAREYoloDetector()
     if args.target == "all":
-        detector.preview_all_detections()
+        CAREYoloDetector(target="spoon").preview_all_detections()
     elif args.target == "plate":
-        detector.scan_plate(preview=args.preview)
+        get_plate_detector().scan_plate(preview=args.preview)
     else:
-        detector.scan_spoon(preview=args.preview)
+        get_spoon_detector().scan_spoon(preview=args.preview)
 
 
 if __name__ == "__main__":

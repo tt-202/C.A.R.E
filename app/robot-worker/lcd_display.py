@@ -63,6 +63,7 @@ STATE_LABELS = {
     "spoon_checking": "SPOON CHECK",
     "spoon_full": "SPOON FULL",
     "spoon_empty": "SPOON EMPTY",
+    "spoon_unknown": "SPOON UNKNOWN",
     "recovery": "RECOVERY",
     "emergency": "EMERGENCY STOP",
     "error": "ERROR",

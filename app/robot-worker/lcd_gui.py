@@ -43,6 +43,7 @@ GUI_MESSAGES = {
     "spoon_check_start": "Checking spoon after scoop",
     "spoon_full": "Food detected on spoon. Starting mouth detection.",
     "spoon_empty": "Spoon appears empty. Press FEED again to retry scoop.",
+    "spoon_unknown": "Spoon check unclear. Press FEED to retry or check camera view.",
     "spoon_failed_limit": "Three failed scoops. Check food position or select another section.",
     "select_during_feed": "SELECT ignored during feeding. Finish bite or press emergency.",
     "feed_hold_at_mouth": "Bite ready. Holding still for {seconds} sec",
