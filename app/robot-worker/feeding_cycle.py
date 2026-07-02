@@ -57,20 +57,30 @@ CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "480"))
 CENTER_TOLERANCE = int(
     os.environ.get("CENTER_TOLERANCE", os.environ.get("DEAD_ZONE_PX", "30"))
 )
-CENTER_HOLD_SECONDS = float(os.environ.get("CENTER_HOLD_SECONDS", "3.0"))
+CENTER_HOLD_SECONDS = float(os.environ.get("CENTER_HOLD_SECONDS", "1.5"))
 STOP_DISTANCE_CM = float(os.environ.get("STOP_DISTANCE_CM", "50.0"))
-STOP_DISTANCE_STABLE_SECONDS = float(os.environ.get("STOP_DISTANCE_STABLE_SECONDS", "2.0"))
-BITE_HOLD_SECONDS = float(os.environ.get("BITE_HOLD_SECONDS", "3.0"))
-APPROACH_COMMAND_PERIOD = float(os.environ.get("APPROACH_COMMAND_PERIOD", "0.20"))
-MAX_APPROACH_SECONDS = float(os.environ.get("MAX_APPROACH_SECONDS", "6.0"))
-LOOP_DELAY = float(os.environ.get("LOOP_DELAY", "0.03"))
-VIEW_SETTLE_SECONDS = float(os.environ.get("ARM_MOVE_SETTLE", "1.0"))
+STOP_DISTANCE_STABLE_SECONDS = float(os.environ.get("STOP_DISTANCE_STABLE_SECONDS", "1.0"))
+BITE_HOLD_SECONDS = float(os.environ.get("BITE_HOLD_SECONDS", "2.0"))
+APPROACH_COMMAND_PERIOD = float(os.environ.get("APPROACH_COMMAND_PERIOD", "0.12"))
+ALIGN_COMMAND_PERIOD = float(os.environ.get("ALIGN_COMMAND_PERIOD", "0.10"))
+MAX_APPROACH_SECONDS = float(os.environ.get("MAX_APPROACH_SECONDS", "8.0"))
+LOOP_DELAY = float(os.environ.get("LOOP_DELAY", "0.02"))
+VIEW_SETTLE_SECONDS = float(os.environ.get("ARM_MOVE_SETTLE", "0.5"))
+MOUTH_TRACK_WIDTH = int(os.environ.get("MOUTH_TRACK_WIDTH", "480"))
+MOUTH_TRACK_HEIGHT = int(os.environ.get("MOUTH_TRACK_HEIGHT", "360"))
+MOUTH_REFINE_LANDMARKS = os.environ.get("MOUTH_REFINE_LANDMARKS", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+MOUTH_MIN_DETECTION_CONFIDENCE = float(os.environ.get("MOUTH_MIN_DETECTION_CONFIDENCE", "0.55"))
+MOUTH_MIN_TRACKING_CONFIDENCE = float(os.environ.get("MOUTH_MIN_TRACKING_CONFIDENCE", "0.55"))
 SHOW_APRILTAG_PREVIEW = os.environ.get("SHOW_APRILTAG_PREVIEW", "true").lower() in (
     "1",
     "true",
     "yes",
 )
-SHOW_MOUTH_PREVIEW = os.environ.get("SHOW_MOUTH_PREVIEW", "true").lower() in (
+SHOW_MOUTH_PREVIEW = os.environ.get("SHOW_MOUTH_PREVIEW", "false").lower() in (
     "1",
     "true",
     "yes",
@@ -252,9 +262,9 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
         face_mesh = mp.solutions.face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
+            refine_landmarks=MOUTH_REFINE_LANDMARKS,
+            min_detection_confidence=MOUTH_MIN_DETECTION_CONFIDENCE,
+            min_tracking_confidence=MOUTH_MIN_TRACKING_CONFIDENCE,
         )
     except AttributeError as exc:
         if "FieldDescriptor" in str(exc) or "label" in str(exc):
@@ -278,6 +288,7 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
     stop_distance_start: float | None = None
     bite_hold_active = False
     last_approach_command_time = 0.0
+    last_align_command_time = 0.0
     last_valid_tof_cm: float | None = None
     last_tof_print_time = 0.0
     last_tracking_gui_time = 0.0
@@ -287,7 +298,9 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
     )
 
     logger.info(
-        "Mouth tracking (hold=%.1fs, stop=%.1fcm stable=%.1fs, bite_hold=%.1fs, fake_tof=%s)",
+        "Mouth tracking (track=%dx%d, hold=%.1fs, stop=%.1fcm stable=%.1fs, bite_hold=%.1fs, fake_tof=%s)",
+        MOUTH_TRACK_WIDTH,
+        MOUTH_TRACK_HEIGHT,
         CENTER_HOLD_SECONDS,
         STOP_DISTANCE_CM,
         STOP_DISTANCE_STABLE_SECONDS,
@@ -340,9 +353,12 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                 time.sleep(LOOP_DELAY)
                 continue
 
-            frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
-            h, w, _ = frame.shape
-            results = face_mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            if frame.shape[1] != MOUTH_TRACK_WIDTH or frame.shape[0] != MOUTH_TRACK_HEIGHT:
+                track_frame = cv2.resize(frame, (MOUTH_TRACK_WIDTH, MOUTH_TRACK_HEIGHT))
+            else:
+                track_frame = frame
+            h, w, _ = track_frame.shape
+            results = face_mesh.process(cv2.cvtColor(track_frame, cv2.COLOR_BGR2RGB))
 
             if results.multi_face_landmarks:
                 landmarks = results.multi_face_landmarks[0].landmark
@@ -398,7 +414,9 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
 
                     if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_ALIGN"):
                         break
-                    arm.align(float(error_x), float(error_y))
+                    if now - last_align_command_time >= ALIGN_COMMAND_PERIOD:
+                        arm.align(float(error_x), float(error_y))
+                        last_align_command_time = now
 
                 if approach_active:
                     if _estop_during_motion(buttons, arm, "EMERGENCY_DURING_APPROACH"):
@@ -545,7 +563,13 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                     stop_distance_start = None
 
             if SHOW_MOUTH_PREVIEW:
-                cv2.imshow("Jetson Mouth Tracking", frame)
+                preview_frame = track_frame
+                if results.multi_face_landmarks:
+                    landmarks = results.multi_face_landmarks[0].landmark
+                    mx, my = get_mouth_center(landmarks, w, h)
+                    cv2.circle(preview_frame, (mx, my), 6, (0, 255, 0), -1)
+                    cv2.circle(preview_frame, (w // 2, h // 2), 4, (0, 0, 255), -1)
+                cv2.imshow("Jetson Mouth Tracking", preview_frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
                     logger.info("[MOUTH] Preview exit key pressed")
@@ -646,6 +670,7 @@ def execute_next_bite(
 
     try:
         with PiArmClient() as arm:
+            bite_t0 = time.monotonic()
             logger.info("Pi ping: %s", arm.ping())
             update_gui_state("idle", "Connected to Raspberry Pi arm server", connected=True, force=True)
 
@@ -714,7 +739,15 @@ def execute_next_bite(
                 return False
 
             if completed:
-                logger.info("=== BITE DONE section=%s ===", section)
+                elapsed = time.monotonic() - bite_t0
+                logger.info("=== BITE DONE section=%s (%.1fs) ===", section, elapsed)
+                target = float(os.environ.get("FEED_CYCLE_TARGET_SECONDS", "30"))
+                if elapsed > target:
+                    logger.warning(
+                        "Feed cycle exceeded target (%.1fs > %.1fs) — tune mouth/YOLO/Pi motion env vars",
+                        elapsed,
+                        target,
+                    )
             return completed
 
     except Exception as exc:

@@ -8,7 +8,7 @@ checking when the arm is in the selection/plate-view angle.
 
 Expected files/location:
   - Plate: best.engine (or YOLO_PLATE_MODEL_PATH)
-  - Spoon: bestest.pt (or YOLO_SPOON_MODEL_PATH)
+  - Spoon: bestest.engine (or YOLO_SPOON_MODEL_PATH)
   - Plug in the USB camera before running.
 
 Standalone tests:
@@ -28,9 +28,9 @@ import cv2
 BASE_DIR = Path(__file__).resolve().parent
 WINDOW_NAME = "USB YOLO Check"
 
-# Plate and spoon can use different weights (e.g. best.engine + bestest.pt).
-_PLATE_MODEL_CANDIDATES = ("best.engine")
-_SPOON_MODEL_CANDIDATES = ("bestest.pt", "best.engine")
+# Plate and spoon use separate TensorRT engines on Jetson.
+_PLATE_MODEL_CANDIDATES = ("best.engine", "bestest.engine", "bestest.pt", "best.pt")
+_SPOON_MODEL_CANDIDATES = ("bestest.engine", "best.engine", "bestest.pt", "best.pt")
 
 
 def _resolve_path_from_env(env_key: str, candidates: tuple[str, ...]) -> str:
@@ -79,8 +79,20 @@ CAMERA_FPS = 30
 CAMERA_FORMAT = "MJPG"
 
 CONFIDENCE = float(os.environ.get("YOLO_CONFIDENCE", "0.50"))
-SCAN_SECONDS = float(os.environ.get("YOLO_SCAN_SECONDS", "2.0"))
-MIN_VOTES = int(os.environ.get("YOLO_MIN_VOTES", "2"))
+SCAN_SECONDS = float(os.environ.get("YOLO_SCAN_SECONDS", "1.0"))
+PLATE_SCAN_SECONDS = float(
+    os.environ.get("YOLO_PLATE_SCAN_SECONDS", os.environ.get("YOLO_SCAN_SECONDS", "0.5"))
+)
+SPOON_SCAN_SECONDS = float(
+    os.environ.get("YOLO_SPOON_SCAN_SECONDS", os.environ.get("YOLO_SCAN_SECONDS", "1.0"))
+)
+MIN_VOTES = int(os.environ.get("YOLO_MIN_VOTES", "1"))
+PLATE_MIN_VOTES = int(os.environ.get("YOLO_PLATE_MIN_VOTES", os.environ.get("YOLO_MIN_VOTES", "1")))
+SPOON_MIN_VOTES = int(os.environ.get("YOLO_SPOON_MIN_VOTES", os.environ.get("YOLO_MIN_VOTES", "1")))
+PLATE_IMGSZ = int(os.environ.get("YOLO_PLATE_IMGSZ", "416"))
+SPOON_IMGSZ = int(os.environ.get("YOLO_SPOON_IMGSZ", "640"))
+CAMERA_WARMUP_FRAMES = int(os.environ.get("YOLO_CAMERA_WARMUP_FRAMES", "2"))
+PLATE_SINGLE_SHOT_CONF = float(os.environ.get("YOLO_PLATE_SINGLE_SHOT_CONF", "0.72"))
 
 # Update these names after checking the printed model.names on the Jetson.
 # These aliases are intentionally broad so common naming variations still work.
@@ -112,6 +124,29 @@ def _norm(name):
 
 def _alias_set(values):
     return {_norm(v) for v in values}
+
+
+def _decide_yolo_status(
+    votes: dict[str, int],
+    *,
+    min_votes: int,
+    empty_aliases: set[str],
+    full_aliases: set[str],
+    best_class: str | None,
+    best_confidence: float,
+    single_shot_conf: float = 0.0,
+) -> str:
+    if votes["full"] >= min_votes and votes["full"] >= votes["empty"]:
+        return "full"
+    if votes["empty"] >= min_votes and votes["empty"] > votes["full"]:
+        return "empty"
+    if single_shot_conf > 0 and best_class and best_confidence >= single_shot_conf:
+        norm_name = _norm(best_class)
+        if norm_name in full_aliases:
+            return "full"
+        if norm_name in empty_aliases:
+            return "empty"
+    return "unknown"
 
 
 def open_usb_camera():
@@ -152,41 +187,67 @@ class CAREYoloDetector:
         print(self.model.names, flush=True)
         print(flush=True)
 
-    def scan_target(self, target, scan_seconds=SCAN_SECONDS, preview=False):
+    def scan_target(
+        self,
+        target,
+        scan_seconds=SCAN_SECONDS,
+        preview=False,
+        *,
+        min_votes: int | None = None,
+        imgsz: int | None = None,
+        single_shot_conf: float = 0.0,
+    ):
         """
         Returns a dictionary with status: 'full', 'empty', or 'unknown'.
         target must be 'plate' or 'spoon'.
+        Exits early as soon as min_votes or single-shot confidence is satisfied.
         """
         target = str(target).strip().lower()
         if target == "plate":
             empty_aliases = _alias_set(PLATE_EMPTY_CLASSES)
             full_aliases = _alias_set(PLATE_FULL_CLASSES)
             log_label = "PLATE"
+            if min_votes is None:
+                min_votes = PLATE_MIN_VOTES
+            if imgsz is None:
+                imgsz = PLATE_IMGSZ
+            if single_shot_conf == 0.0:
+                single_shot_conf = PLATE_SINGLE_SHOT_CONF
         elif target == "spoon":
             empty_aliases = _alias_set(SPOON_EMPTY_CLASSES)
             full_aliases = _alias_set(SPOON_FULL_CLASSES)
             log_label = "SPOON"
+            if min_votes is None:
+                min_votes = SPOON_MIN_VOTES
+            if imgsz is None:
+                imgsz = SPOON_IMGSZ
         else:
             raise ValueError(f"Unsupported YOLO target: {target}")
 
         self.load()
         cap = open_usb_camera()
-        deadline = time.time() + float(scan_seconds)
+        started = time.time()
+        deadline = started + float(scan_seconds)
         votes = {"empty": 0, "full": 0}
         frames = 0
         best = {"class_name": None, "confidence": 0.0}
         last_seen = []
+        status = "unknown"
+        early_exit = False
 
         if preview:
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
 
         print(f"--- USB Camera + YOLO {target.title()} Check Active ---", flush=True)
-        print(f"Camera device: {CAMERA_ID}", flush=True)
-        print(f"Resolution: {CAMERA_WIDTH}x{CAMERA_HEIGHT}", flush=True)
-        print(f"FPS target: {CAMERA_FPS}", flush=True)
-        print(f"Format: {CAMERA_FORMAT}", flush=True)
+        print(
+            f"scan={scan_seconds}s min_votes={min_votes} imgsz={imgsz} warmup={CAMERA_WARMUP_FRAMES}",
+            flush=True,
+        )
 
         try:
+            for _ in range(max(0, CAMERA_WARMUP_FRAMES)):
+                cap.read()
+
             while time.time() < deadline:
                 success, frame = cap.read()
                 if not success or frame is None:
@@ -194,7 +255,7 @@ class CAREYoloDetector:
                     continue
 
                 frames += 1
-                results = self.model(frame, conf=self.confidence, verbose=False)
+                results = self.model(frame, conf=self.confidence, verbose=False, imgsz=imgsz)
                 annotated_frame = frame
 
                 if results:
@@ -216,20 +277,38 @@ class CAREYoloDetector:
                         elif norm_name in full_aliases:
                             votes["full"] += 1
 
+                status = _decide_yolo_status(
+                    votes,
+                    min_votes=min_votes,
+                    empty_aliases=empty_aliases,
+                    full_aliases=full_aliases,
+                    best_class=best["class_name"],
+                    best_confidence=best["confidence"],
+                    single_shot_conf=single_shot_conf,
+                )
+                if status != "unknown":
+                    early_exit = True
+                    break
+
                 if preview:
                     if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_AUTOSIZE) >= 0:
                         cv2.imshow(WINDOW_NAME, annotated_frame)
-                    key_code = cv2.waitKey(10) & 0xFF
+                    key_code = cv2.waitKey(1) & 0xFF
                     if key_code == 27 or key_code == ord("q"):
                         break
 
-            if votes["full"] >= MIN_VOTES and votes["full"] >= votes["empty"]:
-                status = "full"
-            elif votes["empty"] >= MIN_VOTES and votes["empty"] > votes["full"]:
-                status = "empty"
-            else:
-                status = "unknown"
+            if status == "unknown":
+                status = _decide_yolo_status(
+                    votes,
+                    min_votes=min_votes,
+                    empty_aliases=empty_aliases,
+                    full_aliases=full_aliases,
+                    best_class=best["class_name"],
+                    best_confidence=best["confidence"],
+                    single_shot_conf=single_shot_conf,
+                )
 
+            elapsed = time.time() - started
             result = {
                 "target": target,
                 "status": status,
@@ -239,6 +318,8 @@ class CAREYoloDetector:
                 "best_confidence": best["confidence"],
                 "recent_detections": last_seen[-10:],
                 "model_path": self.model_path,
+                "elapsed_sec": round(elapsed, 3),
+                "early_exit": early_exit,
             }
             print(f"[YOLO_{log_label}_RESULT] {result}", flush=True)
             return result
@@ -248,11 +329,13 @@ class CAREYoloDetector:
             if preview:
                 cv2.destroyWindow(WINDOW_NAME)
 
-    def scan_spoon(self, scan_seconds=SCAN_SECONDS, preview=False):
-        return self.scan_target("spoon", scan_seconds=scan_seconds, preview=preview)
+    def scan_spoon(self, scan_seconds=None, preview=False):
+        seconds = SPOON_SCAN_SECONDS if scan_seconds is None else scan_seconds
+        return self.scan_target("spoon", scan_seconds=seconds, preview=preview)
 
-    def scan_plate(self, scan_seconds=SCAN_SECONDS, preview=False):
-        return self.scan_target("plate", scan_seconds=scan_seconds, preview=preview)
+    def scan_plate(self, scan_seconds=None, preview=False):
+        seconds = PLATE_SCAN_SECONDS if scan_seconds is None else scan_seconds
+        return self.scan_target("plate", scan_seconds=seconds, preview=preview)
 
     def preview_all_detections(self):
         """Standalone visual/debug mode matching the original uploaded YOLO script."""
@@ -306,6 +389,20 @@ def check_spoon_state(preview=False):
 
 def check_plate_state(preview=False):
     return get_plate_detector().scan_plate(preview=preview)
+
+
+def preload_yolo_models() -> None:
+    """Load plate/spoon TensorRT weights at worker startup (avoids delay on first SELECT)."""
+    if os.environ.get("ENABLE_YOLO_CHECKS", "true").lower() not in ("1", "true", "yes"):
+        return
+    if os.environ.get("YOLO_PRELOAD", "true").lower() not in ("1", "true", "yes"):
+        return
+    try:
+        get_plate_detector().load()
+        get_spoon_detector().load()
+        print("[YOLO] Plate and spoon models preloaded", flush=True)
+    except Exception as exc:
+        print(f"[YOLO] Preload skipped: {exc}", flush=True)
 
 
 def main():

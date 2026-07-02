@@ -56,6 +56,7 @@ _ROOT = Path(__file__).resolve().parent
 _ENV_LOADED = False
 _active_buttons: ButtonManager | None = None
 _emergency_recovery_deadline: float | None = None
+_emergency_home_in_progress = False
 EMERGENCY_RECOVERY_SECONDS = float(os.environ.get("EMERGENCY_RECOVERY_SECONDS", "10.0"))
 
 
@@ -216,11 +217,15 @@ def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) ->
 
 
 def handle_emergency_recovery(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
-    """After e-stop: wait, then HOME and clear latch (New_Settings_June26)."""
-    global _emergency_recovery_deadline
+    """After e-stop: hold arm stopped for EMERGENCY_RECOVERY_SECONDS, then HOME."""
+    global _emergency_recovery_deadline, _emergency_home_in_progress
 
     if not buttons.is_emergency_latched():
         _emergency_recovery_deadline = None
+        _emergency_home_in_progress = False
+        return
+
+    if _emergency_home_in_progress:
         return
 
     now = time.time()
@@ -237,22 +242,22 @@ def handle_emergency_recovery(db: firestore.Client, rid: str, buttons: ButtonMan
         )
         return
 
-    if buttons.estop_raw_pressed():
+    _emergency_home_in_progress = True
+    try:
         update_gui_state(
-            "emergency",
-            GUI_MESSAGES["emergency_release"],
+            "recovery",
+            GUI_MESSAGES["emergency_returning_home"],
             emergency=True,
             connected=True,
             force=True,
         )
-        return
-
-    try:
         execute_home("EMERGENCY_AUTO_RECOVERY")
         end_feed_cycle("EMERGENCY_RECOVERED_HOME")
         buttons.clear_emergency_latch()
-        buttons.estop_reported = False
         _emergency_recovery_deadline = None
+        # Keep estop_reported until button is released so a held e-stop does not re-fire.
+        if not buttons.estop_raw_pressed():
+            buttons.estop_reported = False
         set_live_state(db, rid, state="IDLE", section=get_selected_section(), emergency=False)
         update_gui_state(
             "idle",
@@ -264,6 +269,8 @@ def handle_emergency_recovery(db: firestore.Client, rid: str, buttons: ButtonMan
         logger.info("Emergency recovery complete — arm homed, system ready")
     except Exception:
         logger.exception("Emergency recovery (HOME) failed")
+    finally:
+        _emergency_home_in_progress = False
 
 
 def handle_gpio_estop(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
@@ -405,6 +412,13 @@ def main() -> int:
     except Exception:
         logger.warning("Pi arm server not reachable at startup (will retry on feed)")
 
+    try:
+        from yolo_detector import preload_yolo_models
+
+        preload_yolo_models()
+    except Exception:
+        logger.warning("YOLO preload skipped", exc_info=True)
+
     update_gui_state(
         "idle",
         GUI_MESSAGES["ready_needs_scan"],
@@ -451,6 +465,12 @@ def main() -> int:
                     buttons.estop_pressed() or buttons.estop_raw_pressed()
                 ):
                     handle_gpio_estop(db, rid, buttons)
+                elif (
+                    buttons.estop_reported
+                    and not buttons.is_emergency_latched()
+                    and not buttons.estop_raw_pressed()
+                ):
+                    buttons.estop_reported = False
                 elif buttons.is_emergency_latched():
                     handle_emergency_recovery(db, rid, buttons)
                     time.sleep(0.05)

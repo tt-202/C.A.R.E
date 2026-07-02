@@ -39,7 +39,8 @@ SHOW_YOLO_PREVIEW = os.environ.get("SHOW_YOLO_PREVIEW", "false").lower() in ("1"
 YOLO_FAIL_OPEN = os.environ.get("YOLO_FAIL_OPEN", "false").lower() in ("1", "true", "yes")
 MAX_FAILED_SCOOPS_PER_SECTION = int(os.environ.get("MAX_FAILED_SCOOPS_PER_SECTION", "3"))
 VIEW_SETTLE_SECONDS = float(os.environ.get("ARM_MOVE_SETTLE", "1.0"))
-SCOOP_YOLO_SETTLE_SECONDS = float(os.environ.get("SCOOP_YOLO_SETTLE_SECONDS", "1.5"))
+PLATE_YOLO_SETTLE_SECONDS = float(os.environ.get("PLATE_YOLO_SETTLE_SECONDS", "0.25"))
+SCOOP_YOLO_SETTLE_SECONDS = float(os.environ.get("SCOOP_YOLO_SETTLE_SECONDS", "0.5"))
 
 
 def parse_force_status(env_key: str) -> ForceMode:
@@ -179,7 +180,7 @@ def run_plate_yolo_check(
     if arm is not None and not already_in_selection_view:
         arm.view_selection()
         set_robot_view("selection")
-        time.sleep(VIEW_SETTLE_SECONDS)
+        time.sleep(PLATE_YOLO_SETTLE_SECONDS)
 
     update_gui_state(
         "plate_checking",
@@ -249,7 +250,7 @@ def ensure_plate_has_food_before_feed(
         logger.info("[FEED_PLATE_GATE] view=%s — moving to selection and checking plate", view)
         arm.view_selection()
         set_robot_view("selection")
-        time.sleep(VIEW_SETTLE_SECONDS)
+        time.sleep(PLATE_YOLO_SETTLE_SECONDS)
         return run_plate_yolo_check(arm, db, robot_id, already_in_selection_view=True)
 
     if force != "auto":
@@ -346,7 +347,7 @@ def handle_plate_button_after_scan(
     if get_robot_view() != "selection":
         arm.view_selection()
         set_robot_view("selection")
-        time.sleep(VIEW_SETTLE_SECONDS)
+        time.sleep(PLATE_YOLO_SETTLE_SECONDS)
         run_plate_yolo_check(arm, db, robot_id, already_in_selection_view=True)
         return get_selected_section()
 

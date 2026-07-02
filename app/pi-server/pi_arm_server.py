@@ -1,28 +1,50 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import socket
 import time
+from pathlib import Path
 
 from pymycobot.mycobot320 import MyCobot320
 
 
-SERIAL_PORT = "/dev/ttyAMA0"
-BAUD_RATE = 115200
+def _load_dotenv() -> None:
+    env_file = Path(__file__).resolve().parent / ".env"
+    if not env_file.is_file():
+        return
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
-HOST = "0.0.0.0"
-PORT = 5002
+
+_load_dotenv()
+
+SERIAL_PORT = os.environ.get("SERIAL_PORT", "/dev/ttyAMA0")
+BAUD_RATE = int(os.environ.get("BAUD_RATE", "115200"))
+
+HOST = os.environ.get("PI_HOST", "0.0.0.0")
+PORT = int(os.environ.get("PI_PORT", "5002"))
 
 # Startup is a JOINT-ANGLE move, not a coordinate move.
 STARTUP_ANGLES = [0, 0, 0, 0, 0, 0]
-STARTUP_SPEED = 20
+STARTUP_SPEED = int(os.environ.get("STARTUP_SPEED", "20"))
 
 # View transitions use send_coords with angular coordinate transition mode.
-VIEW_SPEED = 5
+VIEW_SPEED = int(os.environ.get("VIEW_SPEED", "12"))
 VIEW_MODE = 0
+VIEW_SELECTION_WAIT = float(os.environ.get("VIEW_SELECTION_WAIT", "2.5"))
+VIEW_MOUTH_WAIT = float(os.environ.get("VIEW_MOUTH_WAIT", "2.5"))
+HOME_RETURN_WAIT = float(os.environ.get("HOME_RETURN_WAIT", "4.0"))
 
 # Mouth tracking corrections use send_coords with linear coordinate mode.
-TRACK_SPEED = 50
+TRACK_SPEED = int(os.environ.get("TRACK_SPEED", "65"))
 TRACK_MODE = 1
 
 # Known working views.
@@ -30,7 +52,8 @@ MOUTH_VIEW = [141.1, 180.1, 414.0, -97.87, 1.06, 5.52]
 SELECTION_VIEW = [279.8, -90.3, 323.0, -162.44, 3.64, -96.64]
 
 # X/Z mouth alignment correction.
-STEP = 2
+TRACK_STEP = float(os.environ.get("TRACK_STEP", "2.5"))
+ALIGN_PIXEL_THRESHOLD = int(os.environ.get("ALIGN_PIXEL_THRESHOLD", "25"))
 
 LIMITS = {
     "x": (21.3, 204.1),
@@ -38,9 +61,10 @@ LIMITS = {
 }
 
 # Final forward-to-mouth approach.
-APPROACH_STEP_Y = 2.0
-APPROACH_SPEED = 5
+APPROACH_STEP_Y = float(os.environ.get("APPROACH_STEP_Y", "3.0"))
+APPROACH_SPEED = int(os.environ.get("APPROACH_SPEED", "12"))
 APPROACH_MODE = 0
+SCOOP_WAIT_SCALE = float(os.environ.get("SCOOP_WAIT_SCALE", "0.55"))
 
 # You said +1 moved accurately. Keep +1 unless it reverses after remounting.
 APPROACH_Y_DIRECTION = +1
@@ -151,7 +175,7 @@ def move_to_startup_position():
 
     mc.send_angles(STARTUP_ANGLES, STARTUP_SPEED)
 
-    time.sleep(6)
+    time.sleep(HOME_RETURN_WAIT)
 
     print("Startup angles actual:", mc.get_angles(), flush=True)
     print("Startup coords actual:", mc.get_coords(), flush=True)
@@ -169,7 +193,7 @@ def move_to_selection_view():
 
     mc.send_coords(SELECTION_VIEW, VIEW_SPEED, VIEW_MODE)
 
-    time.sleep(4)
+    time.sleep(VIEW_SELECTION_WAIT)
 
     print("Actual after selection view:", mc.get_coords(), flush=True)
 
@@ -187,7 +211,7 @@ def move_to_mouth_view():
 
     mc.send_coords(MOUTH_VIEW, VIEW_SPEED, VIEW_MODE)
 
-    time.sleep(4)
+    time.sleep(VIEW_MOUTH_WAIT)
 
     actual = mc.get_coords()
 
@@ -228,16 +252,16 @@ def apply_move(cmd):
     global current
 
     if cmd == "MOVE_LEFT":
-        current["x"] -= STEP
+        current["x"] -= TRACK_STEP
 
     elif cmd == "MOVE_RIGHT":
-        current["x"] += STEP
+        current["x"] += TRACK_STEP
 
     elif cmd == "MOVE_FORWARD":
-        current["z"] += STEP
+        current["z"] += TRACK_STEP
 
     elif cmd == "MOVE_BACKWARD":
-        current["z"] -= STEP
+        current["z"] -= TRACK_STEP
 
     else:
         return
@@ -250,13 +274,13 @@ def apply_move(cmd):
 
 def process_alignment(error_x, error_y):
     set_arm_phase("MOUTH_ALIGN")
-    if abs(error_x) > 40:
+    if abs(error_x) > ALIGN_PIXEL_THRESHOLD:
         if error_x > 0:
             apply_move("MOVE_RIGHT")
         else:
             apply_move("MOVE_LEFT")
 
-    if abs(error_y) > 40:
+    if abs(error_y) > ALIGN_PIXEL_THRESHOLD:
         if error_y > 0:
             apply_move("MOVE_BACKWARD")
         else:
@@ -308,7 +332,7 @@ def execute_scoop(section):
             flush=True,
         )
         mc.send_coords(coords, speed, mode)
-        time.sleep(wait_seconds)
+        time.sleep(max(0.5, float(wait_seconds) * SCOOP_WAIT_SCALE))
 
     print(f"[SCOOP] Completed scoop for plate section {section}", flush=True)
     set_arm_phase("SCOOP_DONE", f"section={section}")

@@ -11,7 +11,7 @@ Matches `README_FEED_STATE_UPDATE.md` — SELECT stays locked until HOME finishe
 1. **SCOOP** — Pi runs fixed trajectory for selected plate section (1–4)
 2. **VIEW_MOUTH** — Pi moves to mouth tracking pose
 3. **Mouth tracking** — Jetson MediaPipe + ToF subprocess → Pi `ALIGN` / `CENTERED` / `APPROACH_MOUTH`
-4. **BITE_HOLD** — ToF ≤ `STOP_DISTANCE_CM` (50 cm) stable for `STOP_DISTANCE_STABLE_SECONDS` (2 s), then Pi `BITE_HOLD_READY` + hold `BITE_HOLD_SECONDS` (3 s)
+4. **BITE_HOLD** — ToF ≤ `STOP_DISTANCE_CM` (50 cm) stable for `STOP_DISTANCE_STABLE_SECONDS` (1 s), then Pi `BITE_HOLD_READY` + hold `BITE_HOLD_SECONDS` (2 s)
 5. **HOME** — Pi `move_to_startup_position()` (all-zero joints); then `end_feed_cycle()` unlocks SELECT
 
 Matches `CARE_bite_hold_patch/` (stable ToF confirm → freeze arm → bite timer → HOME).
@@ -103,13 +103,13 @@ Requires `pip install ultralytics`. Plate and spoon can use **different** model 
 
 | File | Default use |
 |------|-------------|
-| `best.engine` | Plate check (TensorRT, fast on Jetson) |
-| `bestest.pt` | Spoon check (after SCOOP) |
+| `best.engine` | Plate check (TensorRT) |
+| `bestest.engine` | Spoon check after SCOOP (TensorRT) |
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `YOLO_PLATE_MODEL_PATH` | `best.engine` | Weights for plate gate |
-| `YOLO_SPOON_MODEL_PATH` | `bestest.pt` | Weights for spoon gate |
+| `YOLO_SPOON_MODEL_PATH` | `bestest.engine` | Weights for spoon gate |
 | `YOLO_MODEL_PATH` | — | Optional override for both if per-target paths unset |
 | `ENABLE_YOLO_CHECKS` | `true` | Run plate/spoon gate logic (keep `true` for real YOLO and manual overrides) |
 | `FORCE_PLATE_STATUS` | `auto` | `auto` = real YOLO; `full` / `empty` / `unknown` = force plate result |
@@ -117,13 +117,26 @@ Requires `pip install ultralytics`. Plate and spoon can use **different** model 
 | `YOLO_FAIL_OPEN` | `false` | If `true`, `unknown` plate/spoon may pass the gate |
 | `SHOW_YOLO_PREVIEW` | `false` | OpenCV window during YOLO scan |
 
+**Fast plate check (SELECT → plate view):**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `YOLO_PLATE_SCAN_SECONDS` | `0.5` | Max scan time (often exits sooner) |
+| `YOLO_PLATE_MIN_VOTES` | `1` | Votes needed for full/empty |
+| `YOLO_PLATE_IMGSZ` | `416` | Smaller inference = faster on Jetson |
+| `YOLO_PLATE_SINGLE_SHOT_CONF` | `0.72` | Accept one strong detection immediately |
+| `PLATE_YOLO_SETTLE_SECONDS` | `0.25` | Pause after arm reaches plate view |
+| `YOLO_PRELOAD` | `true` | Load models at `worker.py` startup |
+
+Plate YOLO runs when SELECT moves the arm **to plate view** (from home). If already at plate view, SELECT only cycles section 1→4 (no YOLO). Logs show `elapsed_sec` and `early_exit: true` when the scan finishes early.
+
 **Real YOLO testing:**
 
 ```env
 ENABLE_YOLO_CHECKS=true
 DRY_RUN=false
 YOLO_PLATE_MODEL_PATH=best.engine
-YOLO_SPOON_MODEL_PATH=bestest.pt
+YOLO_SPOON_MODEL_PATH=bestest.engine
 FORCE_PLATE_STATUS=auto
 FORCE_SPOON_STATUS=auto
 ```
@@ -138,6 +151,23 @@ FORCE_SPOON_STATUS=auto
 
 Invalid force values (e.g. `test`) are treated as `auto`. `ENABLE_YOLO_CHECKS=false` with both forces `auto` bypasses gates (legacy).
 
+## ~30 second feed cycle
+
+Timing is split between **Jetson** (`robot-worker/.env`) and **Pi** (`pi-server/.env`). After FEED, logs show `BITE DONE section=N (XX.Xs)`; warns if over `FEED_CYCLE_TARGET_SECONDS` (default 30).
+
+| Phase | Main knobs |
+|-------|------------|
+| Scoop | Pi `SCOOP_WAIT_SCALE` (default 0.55) |
+| YOLO | `YOLO_*_SCAN_SECONDS=1`, `YOLO_MIN_VOTES=1`, `SCOOP_YOLO_SETTLE_SECONDS=0.5` |
+| Mouth align | `MOUTH_TRACK_WIDTH/HEIGHT`, `ALIGN_COMMAND_PERIOD`, `MOUTH_REFINE_LANDMARKS=false` |
+| Mouth approach | `CENTER_HOLD_SECONDS=1.5`, `APPROACH_COMMAND_PERIOD`, Pi `APPROACH_STEP_Y` |
+| Bite hold | `STOP_DISTANCE_STABLE_SECONDS=1`, `BITE_HOLD_SECONDS=2` |
+| HOME / views | Pi `VIEW_MOUTH_WAIT`, `HOME_RETURN_WAIT`, `VIEW_SPEED` |
+
+On the Pi: `cp app/pi-server/.env.example app/pi-server/.env` and restart `pi_arm_server.py`.
+
+If mouth tracking is jittery after speeding up, raise `CENTER_HOLD_SECONDS` to `2.0` or lower `APPROACH_STEP_Y` on the Pi.
+
 ## Troubleshooting (Jetson)
 
 ### Arm stops after SELECT + FEED and does not return HOME
@@ -146,13 +176,13 @@ Invalid force values (e.g. `test`) are treated as `auto`. `ENABLE_YOLO_CHECKS=fa
 
 **After FEED:** bite hold flow (`CARE_bite_hold_patch`):
 
-1. Face visible on `/dev/video0`; mouth centered **3 s**
-2. ToF approach to **≤ 50 cm**
-3. Confirm ToF stable **2 s** (`STOP_DISTANCE_STABLE_SECONDS`) — Jetson sends **`BITE_HOLD_READY`**, Pi stops arm
+1. Face visible on `/dev/video0`; mouth centered **1.5 s** (`CENTER_HOLD_SECONDS`)
+2. ToF approach to **≤ 50 cm** (`STOP_DISTANCE_CM`)
+3. Confirm ToF stable **1 s** (`STOP_DISTANCE_STABLE_SECONDS`) — Jetson sends **`BITE_HOLD_READY`**, Pi stops arm
 4. Camera/MediaPipe close (no more ALIGN during hold)
-5. Hold **3 s** (`BITE_HOLD_SECONDS`) → **HOME**
+5. Hold **2 s** (`BITE_HOLD_SECONDS`) → **HOME**
 
-**If e-stop (pin 33) was pressed:** release button, wait **10 s** for recovery HOME.
+**If e-stop (pin 33) was pressed:** arm stops immediately, holds **10 s** (`EMERGENCY_RECOVERY_SECONDS`), then **HOME** automatically. Release the button when safe before the next feed.
 
 Check logs for `[BITE_HOLD_READY]`, `[APPROACH]`, `Emergency latched — recovery will HOME`.
 

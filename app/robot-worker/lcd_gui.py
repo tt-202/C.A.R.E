@@ -50,8 +50,9 @@ GUI_MESSAGES = {
     "feed_return_home": "Bite complete. Returning to default position.",
     "feed_end": "Feeding phase ended. SELECT available again.",
     "emergency_active": "Emergency stop active: {reason}",
-    "emergency_wait": "Emergency stop active. Returning home in {seconds} sec",
-    "emergency_release": "Release emergency button to recover",
+    "emergency_wait": "Emergency stop. Arm holding still for {seconds} sec",
+    "emergency_returning_home": "Emergency hold complete. Returning arm to home",
+    "emergency_release": "Release emergency button when safe",
     "emergency_recovered": "Emergency recovered. System ready.",
 }
 

@@ -11,7 +11,7 @@ pupil-apriltags
 adafruit-circuitpython-vl53l1x
 Pillow
 
-# YOLO plate/spoon checks (copy best.engine to this folder on Jetson)
+# YOLO plate/spoon checks (copy best.engine + bestest.engine to this folder on Jetson)
 # ultralytics>=8.0.0
 
 # Jetson.GPIO — install from NVIDIA/Jetson system packages or:
