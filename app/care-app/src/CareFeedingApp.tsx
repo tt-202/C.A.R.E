@@ -25,11 +25,12 @@ import { isRobotControlEnabled, sendRobotCommand } from "@/lib/robotClient";
 import {
   formatPlannedMealDisplay,
   formatPlannedMealTime,
+  formatCompletedMealDisplay,
   MEAL_SLOTS,
   nextMealSlotAfter,
   normalizeMealSchedule,
   parsePlannedMealLabel,
-  upcomingMealSlot,
+  sessionMealSlot,
   type MealSchedule,
   type PlannedMealSlot,
 } from "@/lib/mealSchedule";
@@ -167,7 +168,7 @@ export default function CareFeedingApp({
   const [doneMessageEmergency, setDoneMessageEmergency] = useState(false);
   const [startBusy, setStartBusy] = useState(false);
   const [nextPlannedMeal, setNextPlannedMeal] = useState(() =>
-    formatPlannedMealDisplay(upcomingMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule))),
+    formatPlannedMealDisplay(sessionMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule))),
   );
   const robotId = getPublicRobotId();
   const {
@@ -194,8 +195,8 @@ export default function CareFeedingApp({
   const mealStartedAtRef = useRef<number | null>(null);
   const plannedMealTimeRef = useRef(
     formatPlannedMealTime(
-      upcomingMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule)).label,
-      upcomingMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule)).time,
+      sessionMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule)).label,
+      sessionMealSlot(new Date(), normalizeMealSchedule(initialMealSchedule)).time,
     ),
   );
   const mealScheduleRef = useRef(mealSchedule);
@@ -218,7 +219,7 @@ export default function CareFeedingApp({
 
   useEffect(() => {
     if (sessionActive) return;
-    const slot = upcomingMealSlot(new Date(), mealScheduleRef.current);
+    const slot = sessionMealSlot(new Date(), mealScheduleRef.current);
     plannedMealTimeRef.current = formatPlannedMealTime(slot.label, slot.time);
     setNextPlannedMeal(formatPlannedMealDisplay(slot));
   }, [mealSchedule, sessionActive]);
@@ -550,7 +551,7 @@ export default function CareFeedingApp({
   const startSession = useCallback(async () => {
     setApiError(null);
     if (mealStartedAtRef.current === null) {
-      const slot = upcomingMealSlot(new Date(), mealScheduleRef.current);
+      const slot = sessionMealSlot(new Date(), mealScheduleRef.current);
       applyPlannedMealSlot(slot);
       if (previewMode) {
         mealStartedAtRef.current = Date.now();
@@ -619,7 +620,7 @@ export default function CareFeedingApp({
   const ensureMealSessionForEnd = useCallback(async () => {
     if (previewMode) {
       if (mealStartedAtRef.current === null) {
-        const slot = upcomingMealSlot(new Date(), mealScheduleRef.current);
+        const slot = sessionMealSlot(new Date(), mealScheduleRef.current);
         applyPlannedMealSlot(slot);
         mealStartedAtRef.current = Date.now();
         setBitesCompleted(0);
@@ -685,25 +686,26 @@ export default function CareFeedingApp({
 
       if (data.meal) {
         setMealHistory((prev) => [data.meal!, ...prev.filter((e) => e.id !== data.meal!.id)]);
-        const endedLabel = new Date(data.meal.endedAt).toLocaleString(undefined, {
-          dateStyle: "medium",
-          timeStyle: "short",
-        });
+        const completedLabel = formatCompletedMealDisplay(
+          plannedMealTime,
+          mealScheduleRef.current,
+        );
         const nextLabel = formatPlannedMealDisplay(
           nextMealSlotAfter(parsePlannedMealLabel(plannedMealTime), mealScheduleRef.current),
         );
+        const recipient = careRecipientName?.trim() || "user";
         if (opts.emergency) {
           setDoneMessageEmergency(true);
           setDoneMessage(
             isUser
-              ? `Emergency recorded at ${endedLabel}. Your caregiver has been notified. Next: ${nextLabel}.`
-              : `Emergency stop saved for ${careRecipientName ?? "user"} at ${endedLabel}. Next: ${nextLabel}.`,
+              ? `Emergency during ${completedLabel}. Your caregiver has been notified. Next: ${nextLabel}.`
+              : `Emergency stop saved for ${recipient} during ${completedLabel}. Next: ${nextLabel}.`,
           );
         } else {
           setDoneMessage(
             isUser
-              ? `Meal saved at ${endedLabel}. Next: ${nextLabel}.`
-              : `Meal saved for ${careRecipientName ?? "user"} at ${endedLabel}. Next: ${nextLabel}.`,
+              ? `Meal saved — ${completedLabel}. Next: ${nextLabel}.`
+              : `Meal saved for ${recipient} — ${completedLabel}. Next: ${nextLabel}.`,
           );
         }
       } else {
