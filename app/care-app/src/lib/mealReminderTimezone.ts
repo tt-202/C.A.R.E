@@ -34,6 +34,34 @@ export type ZonedClock = {
   nowMins: number;
 };
 
+/** Wall-clock meal time (HH:MM) on today's calendar date in `timeZone`, as a UTC instant. */
+export function mealWallClockToUtc(
+  mealTime: string,
+  timeZone: string,
+  now = new Date(),
+): Date {
+  const tz = resolveMealTimezone(timeZone);
+  const { dateKey } = zonedClock(now, tz);
+  const [year, month, day] = dateKey.split("-").map((x) => parseInt(x, 10));
+  const [targetH, targetM] = mealTime.split(":").map((x) => parseInt(x, 10));
+  const targetMins = (targetH || 0) * 60 + (targetM || 0);
+
+  let utcMs = Date.UTC(year, month - 1, day, targetH || 0, targetM || 0, 0, 0);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const z = zonedClock(new Date(utcMs), tz);
+    let diffMins = targetMins - (z.hours * 60 + z.minutes);
+    if (z.dateKey !== dateKey) {
+      const targetOrdinal = year * 10000 + month * 100 + day;
+      const [zy, zm, zd] = z.dateKey.split("-").map((x) => parseInt(x, 10));
+      const actualOrdinal = zy * 10000 + zm * 100 + zd;
+      diffMins += (actualOrdinal - targetOrdinal) * 24 * 60;
+    }
+    if (diffMins === 0) break;
+    utcMs += diffMins * 60 * 1000;
+  }
+  return new Date(utcMs);
+}
+
 /** Local calendar date + clock for meal-time comparisons (not server UTC). */
 export function zonedClock(now: Date, timeZone: string): ZonedClock {
   const tz = resolveMealTimezone(timeZone);

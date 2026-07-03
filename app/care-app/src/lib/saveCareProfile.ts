@@ -1,10 +1,12 @@
 import {
   saveCareProfile as persistCareProfileLocal,
+  loadCareProfile,
   type CareProfile,
 } from "@/lib/careProfileStorage";
 import type { UserRole } from "@/AuthPage";
 import { normalizeMealSchedule } from "@/lib/mealSchedule";
-import { detectBrowserTimezone } from "@/lib/mealReminderTimezone";
+import { normalizeBiteHoldSeconds } from "@/lib/biteHoldConfig";
+import { resolveMealTimezone } from "@/lib/mealReminderTimezone";
 
 export type ProfileSaveResult =
   | { ok: true }
@@ -50,6 +52,10 @@ function profileFromResponse(
     careRecipientName: String(data.careRecipientName ?? ""),
     caregiverName: String(data.caregiverName ?? ""),
     ...schedule,
+    timezone: resolveMealTimezone(
+      typeof data.timezone === "string" ? data.timezone : undefined,
+    ),
+    biteHoldSeconds: normalizeBiteHoldSeconds(data.biteHoldSeconds),
     linkedUser: Boolean(data.linkedUser),
     linkedCaregiver: Boolean(data.linkedCaregiver),
   };
@@ -109,6 +115,40 @@ export async function saveCareProfileToServer(
     return { ok: false, error, status: res.status };
   } catch (e) {
     console.warn("[profile] save failed", e);
+    return {
+      ok: false,
+      error: "Could not reach the server. Check your internet connection.",
+    };
+  }
+}
+
+export async function saveBiteHoldSeconds(
+  getIdToken: () => Promise<string>,
+  biteHoldSeconds: number,
+  firebaseUid: string,
+): Promise<ProfileSaveResult & { profile?: CareProfile }> {
+  const seconds = normalizeBiteHoldSeconds(biteHoldSeconds);
+  try {
+    const token = await getIdToken();
+    const res = await fetch("/api/profile", {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ biteHoldSeconds: seconds }),
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (res.ok) {
+      const profile = profileFromResponse(firebaseUid, data);
+      if (profile) persistCareProfileLocal(profile);
+      return profile ? { ok: true, profile } : { ok: true };
+    }
+    const error = await readProfileError(res);
+    console.warn("[profile] bite hold save failed", res.status, error);
+    return { ok: false, error, status: res.status };
+  } catch (e) {
+    console.warn("[profile] bite hold save failed", e);
     return {
       ok: false,
       error: "Could not reach the server. Check your internet connection.",
@@ -225,8 +265,11 @@ export async function saveMealSchedule(
   schedule: { breakfastTime: string; lunchTime: string; dinnerTime: string },
   role: UserRole,
   carePairId: string,
+  timezone?: string,
 ): Promise<ProfileSaveResult> {
   const normalized = normalizeMealSchedule(schedule);
+  const existing = loadCareProfile(firebaseUid);
+  const tz = resolveMealTimezone(timezone ?? existing?.timezone);
   const profile: CareProfile = {
     carePairId,
     firebaseUid,
@@ -234,15 +277,17 @@ export async function saveMealSchedule(
     careRecipientName,
     caregiverName,
     ...normalized,
+    biteHoldSeconds: normalizeBiteHoldSeconds(existing?.biteHoldSeconds),
+    timezone: tz,
+    linkedUser: existing?.linkedUser,
+    linkedCaregiver: existing?.linkedCaregiver,
   };
   persistCareProfileLocal(profile);
 
   const patch = await saveMealScheduleOnly(getIdToken, normalized, {
     careRecipientName,
     caregiverName,
-  }, typeof Intl !== "undefined"
-    ? detectBrowserTimezone()
-    : undefined);
+  }, tz);
   if (patch.ok) return patch;
 
   const post = await saveCareProfileToServer(getIdToken, profile, firebaseUid);

@@ -8,6 +8,7 @@ import {
 import { detectBrowserTimezone } from "@/lib/mealReminderTimezone";
 import type { MealSchedule } from "@/lib/mealSchedule";
 import { isFcmConfigured } from "@/lib/firebasePublicConfig";
+import { triggerMealReminderPush } from "@/lib/fcmRegisterApi";
 import {
   isScheduledNotificationSupported,
   scheduleLocalMealReminders,
@@ -28,6 +29,7 @@ type Options = {
   careRecipientName: string;
   enabled: boolean;
   timezone?: string;
+  getIdToken?: () => Promise<string>;
   onReminder?: (payload: MealReminderPayload) => void;
 };
 
@@ -58,7 +60,7 @@ function dispatchReminder(
   options?: { osNotification?: boolean },
 ) {
   const name = careRecipientName || "your loved one";
-  const title = `${name} — ${slotLabel} soon`;
+  const title = `${name} — ${slotLabel} in 1 hour`;
   const body = `Meal time is ${time}. Please get ${name} ready.`;
 
   onReminder?.({ slotKey, title, body });
@@ -72,31 +74,31 @@ export function useMealReminders({
   careRecipientName,
   enabled,
   timezone,
+  getIdToken,
   onReminder,
 }: Options) {
   const firedRef = useRef<Record<string, string>>({});
+  const getIdTokenRef = useRef(getIdToken);
   const tz = timezone ?? detectBrowserTimezone();
 
   useEffect(() => {
-    if (!enabled || typeof window === "undefined") return;
+    getIdTokenRef.current = getIdToken;
+  }, [getIdToken]);
 
-    // FCM + server cron is the single delivery path for meal reminders.
-    if (isFcmConfigured()) return;
+  useEffect(() => {
+    if (!enabled || typeof window === "undefined") return;
 
     const scheduledSupported = isScheduledNotificationSupported();
     if (Notification.permission === "granted" && scheduledSupported) {
       void scheduleLocalMealReminders(schedule, careRecipientName, tz);
     }
 
-    // Without scheduled SW notifications, poll for in-app + OS fallback.
-    if (scheduledSupported) return;
-
     const check = () => {
       const due = dueMealReminderSlots(schedule, new Date(), tz);
       for (const slot of due) {
         if (firedRef.current[slot.fireKey]) continue;
         firedRef.current[slot.fireKey] = "1";
-        const osNotification = document.visibilityState !== "visible";
+
         dispatchReminder(
           slot.slotKey,
           slot.slotLabel,
@@ -104,8 +106,19 @@ export function useMealReminders({
           careRecipientName,
           slot.fireKey,
           onReminder,
-          { osNotification },
+          {
+            osNotification: document.visibilityState !== "visible" && !scheduledSupported,
+          },
         );
+
+        if (isFcmConfigured() && getIdTokenRef.current) {
+          void triggerMealReminderPush(getIdTokenRef.current, {
+            slotKey: slot.slotKey,
+            slotLabel: slot.slotLabel,
+            time: slot.time,
+            careRecipientName,
+          });
+        }
       }
     };
 

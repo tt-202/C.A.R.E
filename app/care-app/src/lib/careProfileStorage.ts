@@ -1,4 +1,6 @@
 import { DEFAULT_MEAL_SCHEDULE, normalizeMealSchedule, type MealSchedule } from "@/lib/mealSchedule";
+import { DEFAULT_BITE_HOLD_SECONDS, normalizeBiteHoldSeconds } from "@/lib/biteHoldConfig";
+import { DEFAULT_MEAL_TIMEZONE, resolveMealTimezone } from "@/lib/mealReminderTimezone";
 import type { UserRole } from "@/AuthPage";
 
 const PROFILE_KEY = "care_profile";
@@ -14,6 +16,8 @@ export type CareProfile = {
   breakfastTime: string;
   lunchTime: string;
   dinnerTime: string;
+  timezone: string;
+  biteHoldSeconds: number;
   linkedUser?: boolean;
   linkedCaregiver?: boolean;
 };
@@ -39,6 +43,8 @@ function normalizeStoredProfile(parsed: LegacyCareProfile, firebaseUid: string):
     careRecipientName: parsed.careRecipientName,
     caregiverName: parsed.caregiverName,
     ...normalizeMealSchedule(parsed),
+    timezone: resolveMealTimezone(parsed.timezone),
+    biteHoldSeconds: normalizeBiteHoldSeconds(parsed.biteHoldSeconds),
     linkedUser: parsed.linkedUser,
     linkedCaregiver: parsed.linkedCaregiver,
   };
@@ -83,5 +89,7 @@ export function defaultCareProfile(
     careRecipientName,
     caregiverName,
     ...DEFAULT_MEAL_SCHEDULE,
+    timezone: DEFAULT_MEAL_TIMEZONE,
+    biteHoldSeconds: DEFAULT_BITE_HOLD_SECONDS,
   };
 }

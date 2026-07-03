@@ -5,7 +5,7 @@ import {
   mealReminderFireKey,
   REMINDER_LEAD_MINUTES,
 } from "@/lib/mealReminderPush";
-import { detectBrowserTimezone, resolveMealTimezone, zonedClock } from "@/lib/mealReminderTimezone";
+import { detectBrowserTimezone, mealWallClockToUtc, resolveMealTimezone, zonedClock } from "@/lib/mealReminderTimezone";
 import { MEAL_SLOTS, type MealSchedule } from "@/lib/mealSchedule";
 import { registerFcmServiceWorker } from "@/lib/firebaseMessagingClient";
 
@@ -27,7 +27,7 @@ export type ScheduleLocalResult = {
 
 /**
  * Schedules one notification per meal slot today, REMINDER_LEAD_MINUTES before meal time.
- * Uses the device local clock (same as the time picker).
+ * Uses the care pair timezone (wall-clock times from the schedule).
  */
 export async function scheduleLocalMealReminders(
   schedule: MealSchedule,
@@ -58,9 +58,7 @@ export async function scheduleLocalMealReminders(
 
   for (const slot of MEAL_SLOTS) {
     const time = schedule[slot.field];
-    const [h, m] = time.split(":").map((x) => parseInt(x, 10));
-    const mealAt = new Date(now);
-    mealAt.setHours(h || 0, m || 0, 0, 0);
+    const mealAt = mealWallClockToUtc(time, tz, now);
     const remindAtMs = mealAt.getTime() - REMINDER_LEAD_MINUTES * 60 * 1000;
     if (remindAtMs <= nowMs) continue;
 

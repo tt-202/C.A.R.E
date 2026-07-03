@@ -13,6 +13,8 @@ import {
   type CareProfile,
 } from "@/lib/careProfileStorage";
 import { normalizeMealSchedule } from "@/lib/mealSchedule";
+import { normalizeBiteHoldSeconds } from "@/lib/biteHoldConfig";
+import { resolveMealTimezone } from "@/lib/mealReminderTimezone";
 import { loadProfileFromServer } from "@/lib/saveCareProfile";
 
 export default function App() {
@@ -147,8 +149,13 @@ export default function App() {
         profileUid={carePairId}
         linkedUser={Boolean(careProfile.linkedUser)}
         initialMealSchedule={normalizeMealSchedule(careProfile)}
+        initialMealTimezone={resolveMealTimezone(careProfile.timezone)}
+        initialBiteHoldSeconds={normalizeBiteHoldSeconds(careProfile.biteHoldSeconds)}
         onMealScheduleSaved={(schedule) => {
           setCareProfile((prev) => (prev ? { ...prev, ...schedule } : prev));
+        }}
+        onBiteHoldSaved={(seconds) => {
+          setCareProfile((prev) => (prev ? { ...prev, biteHoldSeconds: seconds } : prev));
         }}
         getIdToken={getIdToken}
         onRoleChange={

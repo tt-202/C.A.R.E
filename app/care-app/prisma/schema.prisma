@@ -36,6 +36,8 @@ model CarePair {
   dinnerTime        String           @default("18:00")
   /** IANA timezone for meal reminder wall-clock times (e.g. America/New_York). */
   timezone          String           @default("America/New_York")
+  /** Seconds to hold spoon at mouth before HOME (user + caregiver editable). */
+  biteHoldSeconds   Float            @default(2)
   members           CarePairMember[]
   invites           CareInvite[]
   meals             Meal[]

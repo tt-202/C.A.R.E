@@ -9,6 +9,7 @@ import {
 } from "@/lib/carePair";
 import { ensureUser } from "@/lib/ensureUser";
 import { normalizeMealSchedule } from "@/lib/mealSchedule";
+import { normalizeBiteHoldSeconds } from "@/lib/biteHoldConfig";
 
 function profileRouteError(e: unknown) {
   if (e instanceof Error && e.message === "Unauthorized") {
@@ -58,6 +59,7 @@ export async function POST(request: NextRequest) {
       lunchTime?: string;
       dinnerTime?: string;
       timezone?: string;
+      biteHoldSeconds?: number;
     } = {};
     try {
       body = (await request.json()) as typeof body;
@@ -73,13 +75,14 @@ export async function POST(request: NextRequest) {
 
     const existing = await getCareContext(ctx.uid, { email: ctx.email, displayName: ctx.name });
     const profile = existing.member
-      ? await updateCarePairProfile(ctx.uid, {
+        ? await updateCarePairProfile(ctx.uid, {
           careRecipientName,
           caregiverName,
           timezone: body.timezone,
+          biteHoldSeconds: body.biteHoldSeconds,
           ...schedule,
         })
-      : await createCarePairForCaregiver(ctx.uid, {
+        : await createCarePairForCaregiver(ctx.uid, {
           email: ctx.email,
           displayName: ctx.name ?? caregiverName,
           careRecipientName,
@@ -104,6 +107,7 @@ export async function PATCH(request: NextRequest) {
       careRecipientName?: string;
       caregiverName?: string;
       timezone?: string;
+      biteHoldSeconds?: number;
     } = {};
     try {
       body = (await request.json()) as typeof body;
@@ -121,6 +125,9 @@ export async function PATCH(request: NextRequest) {
       ...(body.careRecipientName?.trim() ? { careRecipientName: body.careRecipientName.trim() } : {}),
       ...(body.caregiverName?.trim() ? { caregiverName: body.caregiverName.trim() } : {}),
       ...(body.timezone?.trim() ? { timezone: body.timezone.trim() } : {}),
+      ...(body.biteHoldSeconds != null
+        ? { biteHoldSeconds: normalizeBiteHoldSeconds(body.biteHoldSeconds) }
+        : {}),
       ...schedule,
     });
 

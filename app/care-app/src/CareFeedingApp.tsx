@@ -8,6 +8,7 @@ import {
   ShieldAlert,
   History,
   RefreshCw,
+  Timer,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -33,7 +34,13 @@ import {
   type MealSchedule,
   type PlannedMealSlot,
 } from "@/lib/mealSchedule";
-import { formatProfileSaveError, createUserInvite, saveMealSchedule } from "@/lib/saveCareProfile";
+import { formatProfileSaveError, createUserInvite, saveMealSchedule, saveBiteHoldSeconds } from "@/lib/saveCareProfile";
+import {
+  DEFAULT_BITE_HOLD_SECONDS,
+  MAX_BITE_HOLD_SECONDS,
+  MIN_BITE_HOLD_SECONDS,
+  normalizeBiteHoldSeconds,
+} from "@/lib/biteHoldConfig";
 import { notifyCaregiverMealEmergency, notifyCaregiverMealFinished } from "@/lib/notifyCaregiver";
 import { useCaregiverMealAlerts } from "@/hooks/useCaregiverMealAlerts";
 import {
@@ -50,7 +57,7 @@ import {
   minutesUntilNextReminder,
   scheduleLocalMealReminders,
 } from "@/lib/scheduleLocalMealReminders";
-import { detectBrowserTimezone } from "@/lib/mealReminderTimezone";
+import { detectBrowserTimezone, resolveMealTimezone } from "@/lib/mealReminderTimezone";
 import { REMINDER_LEAD_MINUTES } from "@/lib/mealReminderPush";
 import { type Timestamp } from "firebase/firestore";
 import { isFirebaseConfigured } from "@/lib/firebaseClient";
@@ -96,7 +103,10 @@ type CareFeedingAppProps = {
   profileUid?: string;
   linkedUser?: boolean;
   initialMealSchedule?: MealSchedule;
+  initialMealTimezone?: string;
+  initialBiteHoldSeconds?: number;
   onMealScheduleSaved?: (schedule: MealSchedule) => void;
+  onBiteHoldSaved?: (seconds: number) => void;
   /** No API calls — meal history stays in this browser (for local preview without Firebase/DB). */
   previewMode?: boolean;
   getIdToken: () => Promise<string>;
@@ -118,13 +128,17 @@ export default function CareFeedingApp({
   profileUid,
   linkedUser = false,
   initialMealSchedule,
+  initialMealTimezone,
+  initialBiteHoldSeconds,
   onMealScheduleSaved,
+  onBiteHoldSaved,
   previewMode = false,
   getIdToken,
   onRoleChange,
   onSignOut,
 }: CareFeedingAppProps) {
   const isUser = role === "user";
+  const mealTimezone = resolveMealTimezone(initialMealTimezone ?? detectBrowserTimezone());
   const welcomeName = isUser
     ? (careRecipientName ?? "User")
     : (caregiverName ?? "Caregiver");
@@ -138,6 +152,11 @@ export default function CareFeedingApp({
   );
   const [scheduleBusy, setScheduleBusy] = useState(false);
   const [scheduleMessage, setScheduleMessage] = useState<string | null>(null);
+  const [biteHoldSeconds, setBiteHoldSeconds] = useState(() =>
+    normalizeBiteHoldSeconds(initialBiteHoldSeconds ?? DEFAULT_BITE_HOLD_SECONDS),
+  );
+  const [biteHoldBusy, setBiteHoldBusy] = useState(false);
+  const [biteHoldMessage, setBiteHoldMessage] = useState<string | null>(null);
   const [activeAlert, setActiveAlert] = useState<{
     title?: string;
     body: string;
@@ -207,6 +226,10 @@ export default function CareFeedingApp({
   }, [initialMealSchedule]);
 
   useEffect(() => {
+    setBiteHoldSeconds(normalizeBiteHoldSeconds(initialBiteHoldSeconds ?? DEFAULT_BITE_HOLD_SECONDS));
+  }, [initialBiteHoldSeconds]);
+
+  useEffect(() => {
     if (sessionActive) return;
     const slot = upcomingMealSlot(new Date(), mealScheduleRef.current);
     plannedMealTimeRef.current = formatPlannedMealTime(slot.label, slot.time);
@@ -219,10 +242,10 @@ export default function CareFeedingApp({
   }, []);
 
   const refreshMealReminders = useCallback(async () => {
-    if (previewMode || isUser || isFcmConfigured()) return;
+    if (previewMode || isUser) return;
     const normalized = normalizeMealSchedule(mealScheduleRef.current);
-    await scheduleLocalMealReminders(normalized, careRecipientName ?? "User", detectBrowserTimezone());
-  }, [previewMode, isUser, careRecipientName]);
+    await scheduleLocalMealReminders(normalized, careRecipientName ?? "User", mealTimezone);
+  }, [previewMode, isUser, careRecipientName, mealTimezone]);
 
   const handleInAppAlert = useCallback(
     (payload: {
@@ -258,7 +281,8 @@ export default function CareFeedingApp({
     schedule: mealSchedule,
     careRecipientName: careRecipientName ?? "User",
     enabled: !previewMode && !isUser,
-    timezone: detectBrowserTimezone(),
+    timezone: mealTimezone,
+    getIdToken,
     onReminder: handleMealReminder,
   });
 
@@ -324,6 +348,7 @@ export default function CareFeedingApp({
       normalized,
       role,
       profileUid ?? "",
+      mealTimezone,
     );
     setScheduleBusy(false);
     if (!result.ok) {
@@ -332,6 +357,7 @@ export default function CareFeedingApp({
     }
 
     onMealScheduleSaved?.(normalized);
+    void refreshMealReminders();
 
     const perm = getNotificationPermission();
     if (perm === "denied") {
@@ -375,7 +401,7 @@ export default function CareFeedingApp({
       : await scheduleLocalMealReminders(
           normalized,
           careRecipientName ?? "User",
-          detectBrowserTimezone(),
+          mealTimezone,
         );
     if (local.scheduled > 0) {
       pushDetail += ` ${local.scheduled} reminder(s) scheduled on this device (${REMINDER_LEAD_MINUTES} min before meals, even if the tab is closed).`;
@@ -388,11 +414,38 @@ export default function CareFeedingApp({
       pushDetail += " Keep this tab open or deploy with Firebase for background alerts.";
     }
 
-    const mins = minutesUntilNextReminder(normalized, new Date(), detectBrowserTimezone());
+    const mins = minutesUntilNextReminder(normalized, new Date(), mealTimezone);
     const nextHint =
       mins !== null ? ` Next alert in about ${mins} minute${mins === 1 ? "" : "s"}.` : "";
 
     setScheduleMessage(`Reminder times saved.${pushDetail}${nextHint}`);
+  };
+
+  const saveBiteHold = async () => {
+    setBiteHoldMessage(null);
+    setApiError(null);
+    const seconds = normalizeBiteHoldSeconds(biteHoldSeconds);
+    if (previewMode) {
+      setBiteHoldSeconds(seconds);
+      setBiteHoldMessage("Bite hold saved on this device (preview mode).");
+      onBiteHoldSaved?.(seconds);
+      return;
+    }
+    if (!firebaseUid) {
+      setApiError("Could not save bite hold time.");
+      return;
+    }
+    setBiteHoldBusy(true);
+    const result = await saveBiteHoldSeconds(getIdTokenRef.current, seconds, firebaseUid);
+    setBiteHoldBusy(false);
+    if (!result.ok) {
+      setApiError(formatProfileSaveError(result).replace(/reminder times/gi, "bite hold"));
+      return;
+    }
+    const saved = normalizeBiteHoldSeconds(result.profile?.biteHoldSeconds ?? seconds);
+    setBiteHoldSeconds(saved);
+    onBiteHoldSaved?.(saved);
+    setBiteHoldMessage(`Bite hold set to ${saved} sec. Applies on the next feed.`);
   };
 
   const loadHistory = useCallback(async () => {
@@ -1051,6 +1104,62 @@ export default function CareFeedingApp({
           </div>
         ) : null}
 
+        <section className="space-y-4" aria-labelledby="bite-hold-heading">
+          <h2 id="bite-hold-heading" className="text-center text-2xl font-bold text-amber-100">
+            Bite hold at mouth
+          </h2>
+          <div className="rounded-2xl border-2 border-stone-600 bg-[#f5ebe0] p-4 shadow-md">
+            <label
+              htmlFor="bite-hold-seconds"
+              className="flex items-center justify-center gap-2 text-lg font-bold text-stone-950"
+            >
+              <Timer className="h-5 w-5 shrink-0" aria-hidden />
+              Hold spoon still (seconds)
+            </label>
+            <p className="mt-2 text-center text-sm font-medium text-stone-700">
+              How long the arm stays at your mouth before returning home. User and caregiver can change this; it applies on the next feed.
+            </p>
+            <div className="mt-4 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+              <Input
+                id="bite-hold-seconds"
+                type="range"
+                min={MIN_BITE_HOLD_SECONDS}
+                max={MAX_BITE_HOLD_SECONDS}
+                step={0.5}
+                value={biteHoldSeconds}
+                onChange={(e) => setBiteHoldSeconds(normalizeBiteHoldSeconds(Number(e.target.value)))}
+                className="h-3 w-full max-w-md cursor-pointer accent-blue-900"
+                aria-valuemin={MIN_BITE_HOLD_SECONDS}
+                aria-valuemax={MAX_BITE_HOLD_SECONDS}
+                aria-valuenow={biteHoldSeconds}
+              />
+              <Input
+                type="number"
+                min={MIN_BITE_HOLD_SECONDS}
+                max={MAX_BITE_HOLD_SECONDS}
+                step={0.5}
+                value={biteHoldSeconds}
+                onChange={(e) => setBiteHoldSeconds(normalizeBiteHoldSeconds(e.target.value))}
+                className="h-14 w-28 rounded-2xl border-2 border-stone-600 bg-[#fffefb] text-center text-2xl font-bold tabular-nums text-stone-950 focus-visible:border-blue-800"
+                aria-label="Bite hold seconds"
+              />
+            </div>
+          </div>
+          <Button
+            type="button"
+            disabled={biteHoldBusy}
+            className="h-14 w-full rounded-2xl border-2 border-stone-700 bg-stone-800 text-lg font-semibold text-white hover:bg-stone-900 disabled:opacity-60"
+            onClick={() => void saveBiteHold()}
+          >
+            Save bite hold
+          </Button>
+          {biteHoldMessage ? (
+            <p className="text-center text-base font-medium text-amber-100" role="status">
+              {biteHoldMessage}
+            </p>
+          ) : null}
+        </section>
+
         {isUser ? (
           <>
             <div className="rounded-3xl border-2 border-stone-700 bg-[#f5ebe0] p-6 shadow-lg">
@@ -1117,6 +1226,9 @@ export default function CareFeedingApp({
                   {sessionActive ? "Current meal on schedule" : "Next meal on schedule"}
                 </p>
                 <p className="mt-1 text-2xl font-black text-stone-950">{nextPlannedMeal}</p>
+                <p className="mt-2 text-sm font-medium text-stone-700">
+                  You get a popup notification 1 hour before each meal time. Allow notifications when prompted, then tap Save reminder times.
+                </p>
                 <p className="mt-2 text-sm font-medium text-stone-700">
                   After Done (meal complete) or Emergency stop, the schedule moves to the next meal.
                 </p>

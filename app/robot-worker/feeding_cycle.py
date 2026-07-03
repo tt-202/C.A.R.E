@@ -37,6 +37,7 @@ from robot_session import (
 )
 from tof_subprocess import read_tof_cm_safe, start_tof_reader, stop_tof_reader, use_fake_tof
 from lcd_gui import GUI_MESSAGES, update_gui_state
+from robot_feeding_config import read_bite_hold_seconds
 from yolo_gates import (
     ensure_plate_has_food_before_feed,
     run_plate_yolo_check,
@@ -218,17 +219,27 @@ def calibrate_plate(
     }
 
 
-def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = None) -> bool:
+def run_mouth_feed_session(
+    arm: PiArmClient,
+    buttons: ButtonManager | None = None,
+    *,
+    bite_hold_seconds: float | None = None,
+) -> bool:
     """
     Mouth tracking + ToF approach + bite hold + HOME.
     Returns True if bite completed and arm homed successfully.
     """
+    hold_seconds = (
+        float(bite_hold_seconds)
+        if bite_hold_seconds is not None
+        else BITE_HOLD_SECONDS
+    )
     if _dry_run():
         logger.info(
             "DRY_RUN mouth_feed_session (hold=%.1fs, stop=%.1fcm, bite_hold=%.1fs)",
             CENTER_HOLD_SECONDS,
             STOP_DISTANCE_CM,
-            BITE_HOLD_SECONDS,
+            hold_seconds,
         )
         time.sleep(2.0)
         return True
@@ -304,7 +315,7 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
         CENTER_HOLD_SECONDS,
         STOP_DISTANCE_CM,
         STOP_DISTANCE_STABLE_SECONDS,
-        BITE_HOLD_SECONDS,
+        hold_seconds,
         use_fake_tof(),
     )
 
@@ -489,7 +500,7 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                                 update_gui_state(
                                     "bite_hold_ready",
                                     GUI_MESSAGES["feed_hold_at_mouth"].format(
-                                        seconds=int(round(BITE_HOLD_SECONDS))
+                                        seconds=int(round(hold_seconds))
                                     ),
                                     connected=True,
                                     error="NONE",
@@ -506,12 +517,12 @@ def run_mouth_feed_session(arm: PiArmClient, buttons: ButtonManager | None = Non
                                 stop_tof_reader()
 
                                 hold_start = time.time()
-                                while time.time() - hold_start < BITE_HOLD_SECONDS:
+                                while time.time() - hold_start < hold_seconds:
                                     if _estop_during_motion(buttons, arm, "EMERGENCY_DURING_BITE_HOLD"):
                                         break
                                     seconds_left = max(
                                         0,
-                                        int(round(BITE_HOLD_SECONDS - (time.time() - hold_start))),
+                                        int(round(hold_seconds - (time.time() - hold_start))),
                                     )
                                     update_gui_state(
                                         "bite_hold_ready",
@@ -732,7 +743,8 @@ def execute_next_bite(
                 return False
 
             logger.info("Step 2/3: mouth tracking + ToF approach")
-            completed = run_mouth_feed_session(arm, buttons)
+            bite_hold = read_bite_hold_seconds(db, robot_id)
+            completed = run_mouth_feed_session(arm, buttons, bite_hold_seconds=bite_hold)
 
             if buttons is not None and buttons.is_emergency_latched():
                 logger.warning("=== BITE ABORTED (emergency) section=%s ===", section)

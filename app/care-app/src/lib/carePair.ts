@@ -5,6 +5,8 @@ import { ensureUser } from "@/lib/ensureUser";
 import { normalizeMealSchedule } from "@/lib/mealSchedule";
 import { resolveMealTimezone } from "@/lib/mealReminderTimezone";
 import { syncCarePairMember } from "@/lib/carePairFirestore";
+import { normalizeBiteHoldSeconds } from "@/lib/biteHoldConfig";
+import { syncRobotFeedingConfig } from "@/lib/robotFeedingConfig";
 
 export type { CareMemberRole };
 
@@ -26,6 +28,7 @@ export type CarePairProfile = {
   lunchTime: string;
   dinnerTime: string;
   timezone: string;
+  biteHoldSeconds: number;
   members: { role: CareMemberRole; email: string }[];
   linkedUser: boolean;
   linkedCaregiver: boolean;
@@ -113,6 +116,7 @@ export function carePairToProfile(
     caregiverName: pair.caregiverName,
     ...schedule,
     timezone: resolveMealTimezone(pair.timezone),
+    biteHoldSeconds: normalizeBiteHoldSeconds(pair.biteHoldSeconds),
     members,
     linkedUser: members.some((m) => m.role === "user"),
     linkedCaregiver: members.some((m) => m.role === "caregiver"),
@@ -175,6 +179,7 @@ export async function createCarePairForCaregiver(
   });
 
   await syncCarePairMember(member.carePairId, firebaseUid, "caregiver");
+  await syncRobotFeedingConfig(normalizeBiteHoldSeconds(member.carePair.biteHoldSeconds));
   return carePairToProfile(member.carePair, "caregiver", [
     { role: "caregiver", email: user.email },
   ]);
@@ -189,6 +194,7 @@ export async function updateCarePairProfile(
     lunchTime?: string;
     dinnerTime?: string;
     timezone?: string;
+    biteHoldSeconds?: number;
   },
 ): Promise<CarePairProfile> {
   const ctx = await getCareContext(firebaseUid);
@@ -202,6 +208,11 @@ export async function updateCarePairProfile(
     dinnerTime: data.dinnerTime ?? ctx.member.carePair.dinnerTime,
   });
 
+  const biteHoldSeconds =
+    data.biteHoldSeconds != null
+      ? normalizeBiteHoldSeconds(data.biteHoldSeconds)
+      : normalizeBiteHoldSeconds(ctx.member.carePair.biteHoldSeconds);
+
   const pair = await withPrisma((prisma) =>
     prisma.carePair.update({
       where: { id: ctx.member!.carePairId },
@@ -214,9 +225,14 @@ export async function updateCarePairProfile(
         ...(data.timezone != null
           ? { timezone: resolveMealTimezone(data.timezone) }
           : {}),
+        ...(data.biteHoldSeconds != null ? { biteHoldSeconds } : {}),
       },
     }),
   );
+
+  if (data.biteHoldSeconds != null) {
+    await syncRobotFeedingConfig(biteHoldSeconds);
+  }
 
   await ensureUser(firebaseUid, {
     careRecipientName: pair.careRecipientName,
