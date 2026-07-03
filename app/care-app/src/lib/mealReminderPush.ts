@@ -25,12 +25,13 @@ export function buildMealReminderPush(
   slotLabel: string,
   time: string,
   careRecipientName: string,
+  fireKey?: string,
 ): { title: string; body: string; tag: string } {
   const name = careRecipientName || "your loved one";
   return {
     title: `${name} — ${slotLabel} in 1 hour`,
     body: `Meal time is ${time}. Please get ${name} ready.`,
-    tag: `meal-early-${slotLabel.toLowerCase()}`,
+    tag: fireKey ? `meal-reminder-${fireKey}` : `meal-early-${slotLabel.toLowerCase()}`,
   };
 }
 

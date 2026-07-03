@@ -8,7 +8,10 @@ import {
 import { detectBrowserTimezone } from "@/lib/mealReminderTimezone";
 import type { MealSchedule } from "@/lib/mealSchedule";
 import { isFcmConfigured } from "@/lib/firebasePublicConfig";
-import { triggerMealReminderPush } from "@/lib/fcmRegisterApi";
+import {
+  markMealReminderShownLocally,
+  wasMealReminderShownLocally,
+} from "@/lib/mealReminderLocalDedup";
 import {
   isScheduledNotificationSupported,
   scheduleLocalMealReminders,
@@ -16,10 +19,11 @@ import {
 
 export { REMINDER_LEAD_MINUTES } from "@/lib/mealReminderPush";
 
-const POLL_MS = 15_000;
+const POLL_MS = 60_000;
 
 export type MealReminderPayload = {
   slotKey: string;
+  fireKey: string;
   title: string;
   body: string;
 };
@@ -29,7 +33,6 @@ type Options = {
   careRecipientName: string;
   enabled: boolean;
   timezone?: string;
-  getIdToken?: () => Promise<string>;
   onReminder?: (payload: MealReminderPayload) => void;
 };
 
@@ -50,75 +53,55 @@ export function showBrowserNotification(
   }
 }
 
-function dispatchReminder(
-  slotKey: string,
-  slotLabel: string,
-  time: string,
+function dispatchInAppReminder(
+  slot: { slotKey: string; slotLabel: string; time: string; fireKey: string },
   careRecipientName: string,
-  fireKey: string,
   onReminder?: (payload: MealReminderPayload) => void,
-  options?: { osNotification?: boolean },
 ) {
   const name = careRecipientName || "your loved one";
-  const title = `${name} — ${slotLabel} in 1 hour`;
-  const body = `Meal time is ${time}. Please get ${name} ready.`;
-
-  onReminder?.({ slotKey, title, body });
-  if (options?.osNotification !== false) {
-    showBrowserNotification(title, body, fireKey);
-  }
+  const title = `${name} — ${slot.slotLabel} in 1 hour`;
+  const body = `Meal time is ${slot.time}. Please get ${name} ready.`;
+  onReminder?.({
+    slotKey: slot.slotKey,
+    fireKey: slot.fireKey,
+    title,
+    body,
+  });
 }
 
+/**
+ * Meal reminders: exactly once per meal slot per day, 1 hour before meal time.
+ * - FCM + EasyCron: server push only (no client poll / no local OS schedule).
+ * - No FCM: service-worker schedule for OS popup when tab closed; in-app banner when tab open.
+ */
 export function useMealReminders({
   schedule,
   careRecipientName,
   enabled,
   timezone,
-  getIdToken,
   onReminder,
 }: Options) {
-  const firedRef = useRef<Record<string, string>>({});
-  const getIdTokenRef = useRef(getIdToken);
   const tz = timezone ?? detectBrowserTimezone();
-
-  useEffect(() => {
-    getIdTokenRef.current = getIdToken;
-  }, [getIdToken]);
 
   useEffect(() => {
     if (!enabled || typeof window === "undefined") return;
 
+    const fcmActive = isFcmConfigured();
     const scheduledSupported = isScheduledNotificationSupported();
-    if (Notification.permission === "granted" && scheduledSupported) {
+
+    if (!fcmActive && Notification.permission === "granted" && scheduledSupported) {
       void scheduleLocalMealReminders(schedule, careRecipientName, tz);
     }
 
+    if (fcmActive) return;
+
     const check = () => {
+      if (document.visibilityState !== "visible") return;
       const due = dueMealReminderSlots(schedule, new Date(), tz);
       for (const slot of due) {
-        if (firedRef.current[slot.fireKey]) continue;
-        firedRef.current[slot.fireKey] = "1";
-
-        dispatchReminder(
-          slot.slotKey,
-          slot.slotLabel,
-          slot.time,
-          careRecipientName,
-          slot.fireKey,
-          onReminder,
-          {
-            osNotification: document.visibilityState !== "visible" && !scheduledSupported,
-          },
-        );
-
-        if (isFcmConfigured() && getIdTokenRef.current) {
-          void triggerMealReminderPush(getIdTokenRef.current, {
-            slotKey: slot.slotKey,
-            slotLabel: slot.slotLabel,
-            time: slot.time,
-            careRecipientName,
-          });
-        }
+        if (wasMealReminderShownLocally(slot.fireKey)) continue;
+        markMealReminderShownLocally(slot.fireKey);
+        dispatchInAppReminder(slot, careRecipientName, onReminder);
       }
     };
 
@@ -153,7 +136,7 @@ export function sendTestMealNotification(careRecipientName: string): boolean {
   const name = careRecipientName || "the user";
   return showBrowserNotification(
     "C.A.R.E — Friendly reminder",
-    `You'll get alerts ${REMINDER_LEAD_MINUTES} minutes before ${name}'s meals.`,
+    `You'll get one alert ${REMINDER_LEAD_MINUTES} minutes before each of ${name}'s meals.`,
     "care-friendlyreminder",
   );
 }
@@ -175,7 +158,7 @@ export function notificationBlockedHelp(): string {
 
   return (
     `Notifications are blocked for ${host}. Open your browser’s site settings for this page, ` +
-    "set Notifications to Allow, reload, then tap Test notification again."
+    "set Notifications to Allow, reload, then tap Save reminder times again."
   );
 }
 
@@ -183,7 +166,8 @@ export function buildTestReminderPayload(careRecipientName: string): MealReminde
   const name = careRecipientName || "the user";
   return {
     slotKey: "test",
+    fireKey: "test:early",
     title: "C.A.R.E — Test reminder",
-    body: `Test OK. You'll get alerts ${REMINDER_LEAD_MINUTES} minutes before ${name}'s meals (yellow banner here + phone banner if allowed).`,
+    body: `Test OK. You'll get one alert ${REMINDER_LEAD_MINUTES} minutes before each of ${name}'s meals.`,
   };
 }

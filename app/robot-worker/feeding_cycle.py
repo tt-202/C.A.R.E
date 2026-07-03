@@ -819,7 +819,7 @@ def handle_plate_select_after_scan(
 
 def execute_stop(reason: str = "STOP") -> None:
     if _dry_run():
-        logger.info("DRY_RUN stop")
+        logger.info("DRY_RUN stop (%s)", reason)
         return
     with PiArmClient() as arm:
         arm.stop(reason)

@@ -271,8 +271,13 @@ export default function CareFeedingApp({
   );
 
   const handleMealReminder = useCallback(
-    (payload: { title: string; body: string }) => {
-      handleInAppAlert({ title: payload.title, body: payload.body, severity: "info" });
+    (payload: { title: string; body: string; fireKey: string }) => {
+      handleInAppAlert({
+        title: payload.title,
+        body: payload.body,
+        severity: "info",
+        alertType: `meal_reminder_${payload.fireKey}`,
+      });
     },
     [handleInAppAlert],
   );
@@ -282,7 +287,6 @@ export default function CareFeedingApp({
     careRecipientName: careRecipientName ?? "User",
     enabled: !previewMode && !isUser,
     timezone: mealTimezone,
-    getIdToken,
     onReminder: handleMealReminder,
   });
 
@@ -316,6 +320,7 @@ export default function CareFeedingApp({
         title: payload.title,
         body: payload.body,
         severity: payload.severity,
+        alertType: `care_alert_${payload.finishedAtMs}`,
       }),
   });
 
@@ -404,7 +409,7 @@ export default function CareFeedingApp({
           mealTimezone,
         );
     if (local.scheduled > 0) {
-      pushDetail += ` ${local.scheduled} reminder(s) scheduled on this device (${REMINDER_LEAD_MINUTES} min before meals, even if the tab is closed).`;
+      pushDetail += ` ${local.scheduled} reminder(s) scheduled on this device (one popup ${REMINDER_LEAD_MINUTES} min before each meal).`;
     } else if (local.supported) {
       pushDetail += " No more reminders today; tomorrow's will schedule when you open the app.";
     } else if (isFcmConfigured()) {
@@ -733,7 +738,17 @@ export default function CareFeedingApp({
 
   const endMeal = async (emergency: boolean) => {
     await ensureMealSessionForEnd();
-    void queueRobot("stop", { emergency });
+    if (isRobotControlEnabled()) {
+      try {
+        await sendRobotCommand(getIdTokenRef.current, "stop", { emergency });
+      } catch {
+        if (emergency) {
+          setApiError(
+            "Could not reach the robot for emergency stop. Check Jetson is online and NEXT_PUBLIC_ROBOT_ENABLED=true.",
+          );
+        }
+      }
+    }
     await finishMealOnServer({ complete: true, emergency });
   };
 
@@ -1227,7 +1242,7 @@ export default function CareFeedingApp({
                 </p>
                 <p className="mt-1 text-2xl font-black text-stone-950">{nextPlannedMeal}</p>
                 <p className="mt-2 text-sm font-medium text-stone-700">
-                  You get a popup notification 1 hour before each meal time. Allow notifications when prompted, then tap Save reminder times.
+                  One popup 1 hour before each meal. You also get one alert when the user taps Done, Emergency stop, or the plate check finds an empty plate.
                 </p>
                 <p className="mt-2 text-sm font-medium text-stone-700">
                   After Done (meal complete) or Emergency stop, the schedule moves to the next meal.

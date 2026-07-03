@@ -39,7 +39,12 @@ def execute_command(
         return True
 
     if cmd in ("pause", "stop"):
-        execute_stop()
+        stop_reason = "APP_EMERGENCY_STOP" if (
+            cmd == "stop"
+            and isinstance(payload, dict)
+            and payload.get("emergency") is True
+        ) else "STOP"
+        execute_stop(stop_reason)
         return False
 
     if cmd == "calibrate_plate":

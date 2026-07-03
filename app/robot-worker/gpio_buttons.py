@@ -165,14 +165,14 @@ class ButtonManager:
         with self._lock:
             self.emergency_latched = False
 
-    def latch_emergency(self, reason: str) -> None:
+    def latch_emergency(self, reason: str, *, notify: bool = True) -> None:
         newly_latched = False
         with self._lock:
             newly_latched = not self.emergency_latched
             if newly_latched:
                 self.emergency_latched = True
                 logger.warning("[ESTOP] Emergency latched: %s", reason)
-        if newly_latched:
+        if newly_latched and notify:
             from estop_hooks import notify_estop_latched
 
             notify_estop_latched()

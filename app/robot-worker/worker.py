@@ -278,12 +278,46 @@ def handle_gpio_estop(db: firestore.Client, rid: str, buttons: ButtonManager) ->
     if buttons.estop_reported:
         return
     buttons.estop_reported = True
-    buttons.latch_emergency("EMERGENCY_BUTTON_MAIN_LOOP")
-    reason = "EMERGENCY_BUTTON"
+    _run_emergency_stop(
+        db,
+        rid,
+        buttons,
+        reason="EMERGENCY_BUTTON",
+        pin=buttons.estop_pin,
+    )
+
+
+def handle_app_estop(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
+    """Care-app emergency stop — same arm STOP + latch + recovery as physical e-stop."""
+    if buttons.is_emergency_latched():
+        logger.warning("App e-stop while emergency already latched — re-sending STOP")
+        try:
+            execute_command("stop", None, buttons=buttons, db=db, robot_id=rid)
+        except Exception:
+            logger.exception("App e-stop: arm STOP retry failed")
+        return
+    _run_emergency_stop(
+        db,
+        rid,
+        buttons,
+        reason="APP_EMERGENCY_STOP",
+        pin=None,
+    )
+
+
+def _run_emergency_stop(
+    db: firestore.Client,
+    rid: str,
+    buttons: ButtonManager,
+    *,
+    reason: str,
+    pin: int | None,
+) -> None:
+    buttons.latch_emergency(reason, notify=False)
     mark_emergency_state(reason)
     phase = read_live_phase(db, rid)
 
-    logger.warning("GPIO e-stop pressed (pin %s, phase=%s)", buttons.estop_pin, phase)
+    logger.warning("Emergency stop (%s, phase=%s)", reason, phase)
 
     update_gui_state(
         "emergency",
@@ -294,19 +328,20 @@ def handle_gpio_estop(db: firestore.Client, rid: str, buttons: ButtonManager) ->
     )
 
     try:
-        execute_command("stop", None)
+        execute_command("stop", None, buttons=buttons, db=db, robot_id=rid)
     except Exception:
-        logger.exception("GPIO e-stop: arm STOP failed")
+        logger.exception("Emergency stop: arm STOP failed")
 
     try:
-        record_hardware_emergency(db, rid, reason=reason, phase=phase, pin=buttons.estop_pin)
+        record_hardware_emergency(db, rid, reason=reason, phase=phase, pin=pin)
     except Exception:
-        logger.exception("GPIO e-stop: Firestore update failed")
+        logger.exception("Emergency stop: Firestore update failed")
 
-    try:
-        notify_app_backend_emergency(robot_id=rid, reason=reason, phase=phase)
-    except Exception:
-        logger.exception("GPIO e-stop: app backend notify failed")
+    if reason != "APP_EMERGENCY_STOP":
+        try:
+            notify_app_backend_emergency(robot_id=rid, reason=reason, phase=phase)
+        except Exception:
+            logger.exception("Emergency stop: app backend notify failed")
 
 
 def _change_is_added_or_modified(change: Any) -> bool:
@@ -340,13 +375,20 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
     payload = data.get("payload")
     rid = robot_id()
     try:
-        completed = execute_command(
-            str(cmd),
-            payload if isinstance(payload, dict) else None,
-            buttons=_active_buttons,
-            db=db,
-            robot_id=rid,
-        )
+        if cmd == "stop" and isinstance(payload, dict) and payload.get("emergency") is True:
+            if _active_buttons is not None:
+                handle_app_estop(db, rid, _active_buttons)
+            else:
+                execute_command("stop", payload, db=db, robot_id=rid)
+            completed = False
+        else:
+            completed = execute_command(
+                str(cmd),
+                payload if isinstance(payload, dict) else None,
+                buttons=_active_buttons,
+                db=db,
+                robot_id=rid,
+            )
         finish_command(ref, ok=True)
         if cmd == "next_bite" and completed:
             section = get_selected_section()

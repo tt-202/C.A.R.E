@@ -66,6 +66,7 @@ export async function scheduleLocalMealReminders(
       slot.label,
       time,
       careRecipientName,
+      mealReminderFireKey(slot.key, undefined, tz, now),
     );
     const TimestampTriggerCtor = (
       globalThis as unknown as { TimestampTrigger: new (ts: number) => unknown }

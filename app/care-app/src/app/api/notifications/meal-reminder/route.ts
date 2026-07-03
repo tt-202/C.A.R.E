@@ -57,12 +57,14 @@ export async function POST(request: NextRequest) {
       slotLabel,
       time,
       careRecipientName,
+      fireKey,
     );
 
     const { sent } = await sendPushToUser(ctx.uid, {
       title: push.title,
       body: push.body,
       tag: push.tag,
+      alertType: "meal_reminder",
       link: "/",
     });
 

@@ -13,6 +13,24 @@ import {
 import { listCaregiverFirebaseUidsForPair } from "@/lib/carePair";
 import { sendPushToUsers } from "@/lib/fcmSend";
 
+/** Do not spam duplicate plate-empty pushes on repeated YOLO checks. */
+const PLATE_EMPTY_COOLDOWN_MS = 30 * 60 * 1000;
+
+/** Do not spam duplicate e-stop pushes from repeated hardware events. */
+const EMERGENCY_COOLDOWN_MS = 2 * 60 * 1000;
+
+export async function shouldSkipPlateEmptyPublish(carePairId: string): Promise<boolean> {
+  const latest = await getLatestCareAlert(carePairId);
+  if (latest?.type !== "plate_empty") return false;
+  return Date.now() - latest.finishedAtMs < PLATE_EMPTY_COOLDOWN_MS;
+}
+
+export async function shouldSkipEmergencyPublish(carePairId: string): Promise<boolean> {
+  const latest = await getLatestCareAlert(carePairId);
+  if (latest?.type !== "meal_emergency") return false;
+  return Date.now() - latest.finishedAtMs < EMERGENCY_COOLDOWN_MS;
+}
+
 export type CaregiverMealAlertInput = {
   carePairId: string;
   careRecipientName: string;
@@ -31,10 +49,14 @@ export type CaregiverPlateAlertInput = {
   plateStatus: string;
 };
 
-/** Write Firestore alert + FCM push when Jetson YOLO detects empty plate. */
+/** Write Firestore alert + FCM push when Jetson YOLO detects empty plate (once per cooldown). */
 export async function publishAndPushCaregiverPlateAlert(
   input: CaregiverPlateAlertInput,
-): Promise<CareAlert> {
+): Promise<CareAlert | null> {
+  if (await shouldSkipPlateEmptyPublish(input.carePairId)) {
+    return null;
+  }
+
   const alert = await publishPlateEmptyAlert(input.carePairId, {
     careRecipientName: input.careRecipientName,
     caregiverName: input.caregiverName,
@@ -56,10 +78,14 @@ export async function publishAndPushCaregiverPlateAlert(
   return alert;
 }
 
-/** Write Firestore alert + FCM push to all caregivers on the pair. */
+/** Write Firestore alert + FCM push to all caregivers on the pair (once per event). */
 export async function publishAndPushCaregiverMealAlert(
   input: CaregiverMealAlertInput,
-): Promise<CareAlert> {
+): Promise<CareAlert | null> {
+  if (input.emergency && (await shouldSkipEmergencyPublish(input.carePairId))) {
+    return null;
+  }
+
   const base = {
     careRecipientName: input.careRecipientName,
     caregiverName: input.caregiverName,

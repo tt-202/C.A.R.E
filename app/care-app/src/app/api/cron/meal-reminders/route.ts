@@ -69,11 +69,13 @@ export async function GET(request: NextRequest) {
           slot.slotLabel,
           slot.time,
           pair.careRecipientName,
+          slot.fireKey,
         );
         const { sent } = await sendPushToUsers(caregiverUids, {
           title: msg.title,
           body: msg.body,
           tag: msg.tag,
+          alertType: "meal_reminder",
         });
 
         if (sent > 0) {
