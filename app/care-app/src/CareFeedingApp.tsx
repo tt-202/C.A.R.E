@@ -22,7 +22,6 @@ import {
   saveMealHistory,
 } from "./mealHistoryStorage";
 import { isRobotControlEnabled, sendRobotCommand } from "@/lib/robotClient";
-import type { RobotCommandPayload, RobotCommandType } from "@/lib/robot";
 import {
   formatPlannedMealDisplay,
   formatPlannedMealTime,
@@ -205,18 +204,6 @@ export default function CareFeedingApp({
   const biteInFlight = useRef(false);
   const lastEatPressSeqRef = useRef(0);
   const feedPressHandling = useRef(false);
-
-  const queueRobot = useCallback(
-    async (cmd: RobotCommandType, payload?: RobotCommandPayload) => {
-      if (previewMode || !isRobotControlEnabled()) return;
-      try {
-        await sendRobotCommand(getIdTokenRef.current, cmd, payload);
-      } catch {
-        console.warn("[robot]", cmd, "request failed");
-      }
-    },
-    [previewMode],
-  );
 
   mealScheduleRef.current = mealSchedule;
   getIdTokenRef.current = getIdToken;
