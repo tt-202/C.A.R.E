@@ -57,7 +57,6 @@ _ENV_LOADED = False
 _active_buttons: ButtonManager | None = None
 _emergency_recovery_deadline: float | None = None
 _emergency_home_in_progress = False
-EMERGENCY_RECOVERY_SECONDS = float(os.environ.get("EMERGENCY_RECOVERY_SECONDS", "10.0"))
 
 
 def _load_dotenv() -> None:
@@ -216,8 +215,28 @@ def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) ->
         set_live_state(db, rid, state="IDLE", section=get_selected_section(), emergency=False)
 
 
+def _get_emergency_recovery_seconds() -> float:
+    """Return the emergency hold time before automatic HOME recovery."""
+    raw = os.environ.get("EMERGENCY_RECOVERY_SECONDS", "0")
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        logger.warning("Invalid EMERGENCY_RECOVERY_SECONDS=%r; using 0", raw)
+        return 0.0
+
+
+def _get_estop_rearm_cooldown_seconds() -> float:
+    """Return the cooldown after emergency recovery before e-stop can retrigger."""
+    raw = os.environ.get("ESTOP_REARM_COOLDOWN_SECONDS", "2.0")
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        logger.warning("Invalid ESTOP_REARM_COOLDOWN_SECONDS=%r; using 2.0", raw)
+        return 2.0
+
+
 def handle_emergency_recovery(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
-    """After e-stop: hold arm stopped for EMERGENCY_RECOVERY_SECONDS, then HOME."""
+    """After e-stop: optionally hold stopped, then HOME exactly once."""
     global _emergency_recovery_deadline, _emergency_home_in_progress
 
     if not buttons.is_emergency_latched():
@@ -229,18 +248,26 @@ def handle_emergency_recovery(db: firestore.Client, rid: str, buttons: ButtonMan
         return
 
     now = time.time()
-    if _emergency_recovery_deadline is None:
-        _emergency_recovery_deadline = now + EMERGENCY_RECOVERY_SECONDS
+    emergency_recovery_seconds = _get_emergency_recovery_seconds()
 
-    if now < _emergency_recovery_deadline:
-        seconds_left = max(0, int(round(_emergency_recovery_deadline - now)))
-        update_gui_state(
-            "emergency",
-            GUI_MESSAGES["emergency_wait"].format(seconds=seconds_left),
-            emergency=True,
-            connected=True,
-        )
-        return
+    # If the requested emergency hold is zero, do not show/enter the timed
+    # emergency_wait state at all. This avoids the apparent second 10-second wait
+    # when .env is missing, stale, or not copied to the Jetson.
+    if emergency_recovery_seconds > 0:
+        if _emergency_recovery_deadline is None:
+            _emergency_recovery_deadline = now + emergency_recovery_seconds
+
+        if now < _emergency_recovery_deadline:
+            seconds_left = max(0, int(round(_emergency_recovery_deadline - now)))
+            update_gui_state(
+                "emergency",
+                GUI_MESSAGES["emergency_wait"].format(seconds=seconds_left),
+                emergency=True,
+                connected=True,
+            )
+            return
+    else:
+        _emergency_recovery_deadline = now
 
     _emergency_home_in_progress = True
     try:
@@ -255,9 +282,13 @@ def handle_emergency_recovery(db: firestore.Client, rid: str, buttons: ButtonMan
         end_feed_cycle("EMERGENCY_RECOVERED_HOME")
         buttons.clear_emergency_latch()
         _emergency_recovery_deadline = None
-        # Keep estop_reported until button is released so a held e-stop does not re-fire.
-        if not buttons.estop_raw_pressed():
-            buttons.estop_reported = False
+
+        # Keep the physical e-stop disarmed until it has been released and a
+        # short cooldown has passed. This prevents a held/bouncing e-stop pin
+        # from starting a second GUI 10-second countdown after HOME begins.
+        buttons.estop_reported = True
+        buttons.disarm_estop_until_release(_get_estop_rearm_cooldown_seconds())
+
         set_live_state(db, rid, state="IDLE", section=get_selected_section(), emergency=False)
         update_gui_state(
             "idle",
@@ -292,7 +323,9 @@ def handle_app_estop(db: firestore.Client, rid: str, buttons: ButtonManager) -> 
     if buttons.is_emergency_latched():
         logger.warning("App e-stop while emergency already latched — re-sending STOP")
         try:
-            execute_command("stop", None, buttons=buttons, db=db, robot_id=rid)
+            from feeding_cycle import execute_stop
+
+            execute_stop("APP_EMERGENCY_STOP")
         except Exception:
             logger.exception("App e-stop: arm STOP retry failed")
         return
@@ -328,7 +361,10 @@ def _run_emergency_stop(
     )
 
     try:
-        execute_command("stop", None, buttons=buttons, db=db, robot_id=rid)
+        # Send the actual emergency reason to the Pi instead of the generic STOP reason.
+        from feeding_cycle import execute_stop
+
+        execute_stop(reason)
     except Exception:
         logger.exception("Emergency stop: arm STOP failed")
 
@@ -503,12 +539,15 @@ def main() -> int:
     try:
         while True:
             if buttons.enabled:
-                if not buttons.estop_reported and (
-                    buttons.estop_pressed() or buttons.estop_raw_pressed()
+                if (
+                    buttons.estop_can_trigger()
+                    and not buttons.estop_reported
+                    and (buttons.estop_pressed() or buttons.estop_raw_pressed())
                 ):
                     handle_gpio_estop(db, rid, buttons)
                 elif (
                     buttons.estop_reported
+                    and buttons.estop_can_trigger()
                     and not buttons.is_emergency_latched()
                     and not buttons.estop_raw_pressed()
                 ):

@@ -83,6 +83,12 @@ class ButtonManager:
         self._last_feed_stable = False
         self._last_plate_stable = False
         self._last_estop_stable = False
+        # After emergency recovery, require the physical e-stop input to be
+        # released and stable before it can trigger a new emergency. This
+        # prevents the GUI from starting a second 10-second emergency timer
+        # from switch bounce/stale GPIO state while the arm is returning home.
+        self._estop_rearm_deadline = 0.0
+        self._estop_waiting_for_release = False
 
     def setup(self) -> bool:
         if not self.enabled:
@@ -131,9 +137,15 @@ class ButtonManager:
         now = time.time()
         if self._estop_btn and self._estop_btn.update(now):
             pressed = self._estop_btn.is_pressed()
+            if not pressed and self._estop_waiting_for_release and now >= self._estop_rearm_deadline:
+                self._estop_waiting_for_release = False
+                logger.info("[ESTOP] Physical e-stop released; input re-armed")
             if pressed and not self._last_estop_stable:
-                self._estop_edge = True
-                self.latch_emergency("GPIO_ESTOP_DEBOUNCED")
+                if self.estop_can_trigger():
+                    self._estop_edge = True
+                    self.latch_emergency("GPIO_ESTOP_DEBOUNCED")
+                else:
+                    logger.info("[ESTOP] Ignoring e-stop edge until release/cooldown completes")
             self._last_estop_stable = pressed
         if self._feed_btn and self._feed_btn.update(now):
             pressed = self._feed_btn.is_pressed()
@@ -165,6 +177,34 @@ class ButtonManager:
         with self._lock:
             self.emergency_latched = False
 
+    def disarm_estop_until_release(self, cooldown_sec: float = 2.0) -> None:
+        """Prevent immediate physical e-stop retrigger after recovery.
+
+        Emergency recovery sends STOP, waits, then sends HOME. The physical
+        button can still be held, bouncing, or have a stale debounced edge.
+        Without this re-arm gate, the worker can interpret that as a second
+        emergency and show another countdown.
+        """
+        now = time.time()
+        with self._lock:
+            self._estop_edge = False
+            self._estop_waiting_for_release = True
+            self._estop_rearm_deadline = now + max(0.0, cooldown_sec)
+        logger.info("[ESTOP] Input disarmed until release and %.2fs cooldown", cooldown_sec)
+
+    def estop_can_trigger(self) -> bool:
+        now = time.time()
+        if self._estop_waiting_for_release:
+            # If the release happened before cooldown ended, there may be no new
+            # GPIO edge when the cooldown expires. Re-arm here once both
+            # conditions are true: cooldown elapsed and raw pin is released.
+            if now >= self._estop_rearm_deadline and not self.estop_raw_pressed():
+                self._estop_waiting_for_release = False
+                logger.info("[ESTOP] Physical e-stop released; input re-armed")
+                return True
+            return False
+        return now >= self._estop_rearm_deadline
+
     def latch_emergency(self, reason: str, *, notify: bool = True) -> None:
         newly_latched = False
         with self._lock:
@@ -194,6 +234,9 @@ class ButtonManager:
         return False
 
     def estop_pressed(self) -> bool:
+        if not self.estop_can_trigger():
+            self._estop_edge = False
+            return False
         if self._estop_edge:
             self._estop_edge = False
             return True

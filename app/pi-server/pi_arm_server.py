@@ -41,7 +41,7 @@ VIEW_SPEED = int(os.environ.get("VIEW_SPEED", "12"))
 VIEW_MODE = 0
 VIEW_SELECTION_WAIT = float(os.environ.get("VIEW_SELECTION_WAIT", "2.5"))
 VIEW_MOUTH_WAIT = float(os.environ.get("VIEW_MOUTH_WAIT", "2.5"))
-HOME_RETURN_WAIT = float(os.environ.get("HOME_RETURN_WAIT", "4.0"))
+HOME_RETURN_WAIT = 0.0  # Removed extra wait after HOME command.
 
 # Mouth tracking corrections use send_coords with linear coordinate mode.
 TRACK_SPEED = int(os.environ.get("TRACK_SPEED", "65"))
@@ -175,7 +175,10 @@ def move_to_startup_position():
 
     mc.send_angles(STARTUP_ANGLES, STARTUP_SPEED)
 
-    time.sleep(HOME_RETURN_WAIT)
+    # No post-HOME sleep: emergency recovery should return control immediately
+    # after the home command is sent.
+    if HOME_RETURN_WAIT > 0:
+        time.sleep(HOME_RETURN_WAIT)
 
     print("Startup angles actual:", mc.get_angles(), flush=True)
     print("Startup coords actual:", mc.get_coords(), flush=True)
@@ -442,7 +445,12 @@ def handle_client(conn, addr):
                     reason = msg.get("reason", "HOME")
                     print(f"HOME requested. Reason: {reason}", flush=True)
 
-                    safe_stop(reason)
+                    # During emergency recovery, STOP was already sent first.
+                    # Do not call safe_stop() again because it can cause an extra
+                    # settling/twitch before the actual HOME/default movement.
+                    if "EMERGENCY" not in str(reason).upper():
+                        safe_stop(reason)
+
                     move_to_startup_position()
 
                     send_json(conn, {
