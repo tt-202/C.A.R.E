@@ -54,10 +54,12 @@ SELECTION_VIEW = [279.8, -90.3, 323.0, -162.44, 3.64, -96.64]
 # X/Z mouth alignment correction.
 TRACK_STEP = float(os.environ.get("TRACK_STEP", "2.5"))
 ALIGN_PIXEL_THRESHOLD = int(os.environ.get("ALIGN_PIXEL_THRESHOLD", "25"))
+ALIGN_DOMINANT_AXIS_ONLY = os.environ.get("ALIGN_DOMINANT_AXIS_ONLY", "true").lower() in ("1", "true", "yes", "on")
+TRACK_LIMIT_MARGIN = float(os.environ.get("TRACK_LIMIT_MARGIN", "0.01"))
 
 LIMITS = {
     "x": (21.3, 204.1),
-    "z": (334.0, 457.0),
+    "z": (334.0, 435.0),
 }
 
 # Final forward-to-mouth approach.
@@ -251,43 +253,96 @@ def send_current_coords(speed, mode, label):
     mc.send_coords(next_coords, speed, mode)
 
 
+def _limit_hint_for_cmd(cmd):
+    """Return a user-facing hint for the Jetson GUI when the arm reaches a tracking limit.
+
+    These hints are intentionally simple because the user may be older or may not
+    understand robot coordinates. If the physical direction feels reversed during
+    testing, swap the LEFT/RIGHT message mapping here only.
+    """
+    hints = {
+        "MOVE_LEFT": "MOVE_USER_LEFT",
+        "MOVE_RIGHT": "MOVE_USER_RIGHT",
+        "MOVE_FORWARD": "MOVE_USER_DOWN_OR_BACK",
+        "MOVE_BACKWARD": "MOVE_USER_UP_OR_FORWARD",
+    }
+    return hints.get(cmd, "ADJUST_POSITION")
+
+
 def apply_move(cmd):
     global current
 
+    before_x = current["x"]
+    before_z = current["z"]
+    axis = None
+
     if cmd == "MOVE_LEFT":
+        axis = "x"
         current["x"] -= TRACK_STEP
 
     elif cmd == "MOVE_RIGHT":
+        axis = "x"
         current["x"] += TRACK_STEP
 
     elif cmd == "MOVE_FORWARD":
+        axis = "z"
         current["z"] += TRACK_STEP
 
     elif cmd == "MOVE_BACKWARD":
+        axis = "z"
         current["z"] -= TRACK_STEP
 
     else:
-        return
+        return None
 
     current["x"] = clamp(current["x"], *LIMITS["x"])
     current["z"] = clamp(current["z"], *LIMITS["z"])
 
+    blocked_by_limit = (
+        abs(current["x"] - before_x) <= TRACK_LIMIT_MARGIN
+        and abs(current["z"] - before_z) <= TRACK_LIMIT_MARGIN
+    )
+
+    if blocked_by_limit:
+        hit = {
+            "cmd": cmd,
+            "axis": axis,
+            "hint": _limit_hint_for_cmd(cmd),
+            "x": round(current["x"], 2),
+            "z": round(current["z"], 2),
+        }
+        print(f"[TRACK_LIMIT] {hit}", flush=True)
+        return hit
+
     send_current_coords(TRACK_SPEED, TRACK_MODE, f"Linear tracking correction {cmd}")
+    return None
 
 
 def process_alignment(error_x, error_y):
-    set_arm_phase("MOUTH_ALIGN")
-    if abs(error_x) > ALIGN_PIXEL_THRESHOLD:
-        if error_x > 0:
-            apply_move("MOVE_RIGHT")
-        else:
-            apply_move("MOVE_LEFT")
+    """Apply one bounded alignment correction and return any limit-hit hints.
 
+    Dominant-axis mode keeps the motion cleaner by sending at most one correction
+    per ALIGN command. This reduces command spam and helps avoid delayed/stale
+    corrections while tracking the mouth.
+    """
+    set_arm_phase("MOUTH_ALIGN")
+    limit_hits = []
+
+    move_cmds = []
+    if abs(error_x) > ALIGN_PIXEL_THRESHOLD:
+        move_cmds.append((abs(error_x), "MOVE_RIGHT" if error_x > 0 else "MOVE_LEFT"))
     if abs(error_y) > ALIGN_PIXEL_THRESHOLD:
-        if error_y > 0:
-            apply_move("MOVE_BACKWARD")
-        else:
-            apply_move("MOVE_FORWARD")
+        move_cmds.append((abs(error_y), "MOVE_BACKWARD" if error_y > 0 else "MOVE_FORWARD"))
+
+    if ALIGN_DOMINANT_AXIS_ONLY and move_cmds:
+        move_cmds = [max(move_cmds, key=lambda item: item[0])]
+
+    for _, move_cmd in move_cmds:
+        hit = apply_move(move_cmd)
+        if hit is not None:
+            limit_hits.append(hit)
+
+    return limit_hits
 
 
 def approach_mouth_step(tof_cm=None):
@@ -411,8 +466,17 @@ def handle_client(conn, addr):
                     error_x = msg.get("error_x", 0)
                     error_y = msg.get("error_y", 0)
 
-                    process_alignment(error_x, error_y)
-
+                    limit_hits = process_alignment(error_x, error_y)
+                    send_json(conn, {
+                        "status": "ok",
+                        "reply": "ALIGN_DONE",
+                        "limit_hits": limit_hits,
+                        "current": {
+                            "x": round(current["x"], 2),
+                            "y": round(current["y"], 2),
+                            "z": round(current["z"], 2),
+                        },
+                    })
 
                 elif cmd == "CENTERED":
                     print("Mouth centered - holding ready state", flush=True)

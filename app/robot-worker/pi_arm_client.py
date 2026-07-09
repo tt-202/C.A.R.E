@@ -110,11 +110,17 @@ class PiArmClient:
             f"SCOOP section {section}",
         )
 
-    def align(self, error_x: float, error_y: float) -> None:
-        self.send_json(
-            {"cmd": "ALIGN", "error_x": error_x, "error_y": error_y},
-            wait_reply=False,
-        )
+    def align(self, error_x: float, error_y: float) -> dict[str, Any] | None:
+        """Send one mouth-alignment correction and return Pi limit feedback."""
+        try:
+            return self.send_json(
+                {"cmd": "ALIGN", "error_x": error_x, "error_y": error_y},
+                wait_reply=True,
+                reply_timeout=0.35,
+            )
+        except Exception as exc:
+            logger.warning("ALIGN reply unavailable: %s", exc)
+            return None
 
     def centered(self) -> None:
         self.send_json({"cmd": "CENTERED"}, wait_reply=False)

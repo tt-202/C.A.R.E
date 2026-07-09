@@ -63,7 +63,8 @@ STOP_DISTANCE_CM = float(os.environ.get("STOP_DISTANCE_CM", "50.0"))
 STOP_DISTANCE_STABLE_SECONDS = float(os.environ.get("STOP_DISTANCE_STABLE_SECONDS", "1.0"))
 BITE_HOLD_SECONDS = float(os.environ.get("BITE_HOLD_SECONDS", "2.0"))
 APPROACH_COMMAND_PERIOD = float(os.environ.get("APPROACH_COMMAND_PERIOD", "0.12"))
-ALIGN_COMMAND_PERIOD = float(os.environ.get("ALIGN_COMMAND_PERIOD", "0.10"))
+ALIGN_COMMAND_PERIOD = float(os.environ.get("ALIGN_COMMAND_PERIOD", "0.20"))
+TRACK_LIMIT_GUI_COOLDOWN = float(os.environ.get("TRACK_LIMIT_GUI_COOLDOWN", "1.0"))
 MAX_APPROACH_SECONDS = float(os.environ.get("MAX_APPROACH_SECONDS", "8.0"))
 LOOP_DELAY = float(os.environ.get("LOOP_DELAY", "0.02"))
 VIEW_SETTLE_SECONDS = float(os.environ.get("ARM_MOVE_SETTLE", "0.5"))
@@ -99,6 +100,27 @@ def get_mouth_center(landmarks, w: int, h: int) -> tuple[int, int]:
     x = int(((left.x + right.x) / 2) * w)
     y = int(((left.y + right.y) / 2) * h)
     return x, y
+
+
+def _track_limit_message(limit_hits: list[dict] | None) -> str | None:
+    if not limit_hits:
+        return None
+
+    hint = str(limit_hits[0].get("hint", "ADJUST_POSITION"))
+    message_map = {
+        "MOVE_USER_LEFT": GUI_MESSAGES.get("track_limit_move_left", "Please move slightly LEFT."),
+        "MOVE_USER_RIGHT": GUI_MESSAGES.get("track_limit_move_right", "Please move slightly RIGHT."),
+        "MOVE_USER_UP_OR_FORWARD": GUI_MESSAGES.get(
+            "track_limit_adjust_up_forward", "Please adjust slightly up or forward."
+        ),
+        "MOVE_USER_DOWN_OR_BACK": GUI_MESSAGES.get(
+            "track_limit_adjust_down_back", "Please adjust slightly down or back."
+        ),
+        "ADJUST_POSITION": GUI_MESSAGES.get(
+            "track_limit_adjust_position", "Please adjust your head position."
+        ),
+    }
+    return message_map.get(hint, message_map["ADJUST_POSITION"])
 
 
 def _load_plate_scan_module():
@@ -303,6 +325,7 @@ def run_mouth_feed_session(
     last_valid_tof_cm: float | None = None
     last_tof_print_time = 0.0
     last_tracking_gui_time = 0.0
+    last_limit_gui_time = 0.0
     feeding_completed_and_homed = False
     deadline = (
         time.time() + MOUTH_SESSION_TIMEOUT if MOUTH_SESSION_TIMEOUT > 0 else None
@@ -426,8 +449,21 @@ def run_mouth_feed_session(
                     if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_ALIGN"):
                         break
                     if now - last_align_command_time >= ALIGN_COMMAND_PERIOD:
-                        arm.align(float(error_x), float(error_y))
+                        align_reply = arm.align(float(error_x), float(error_y))
                         last_align_command_time = now
+
+                        limit_hits: list[dict] = []
+                        if isinstance(align_reply, dict):
+                            limit_hits = align_reply.get("limit_hits") or []
+                        limit_message = _track_limit_message(limit_hits)
+                        if limit_message and (now - last_limit_gui_time) >= TRACK_LIMIT_GUI_COOLDOWN:
+                            update_gui_state(
+                                "mouth_tracking_limit",
+                                limit_message,
+                                connected=True,
+                                force=True,
+                            )
+                            last_limit_gui_time = now
 
                 if approach_active:
                     if _estop_during_motion(buttons, arm, "EMERGENCY_DURING_APPROACH"):
@@ -591,8 +627,11 @@ def run_mouth_feed_session(
 
     finally:
         if not feeding_completed_and_homed:
-            arm.stop("MOUTH_TRACKING_PHASE_ENDED")
+            # If an emergency is latched, the emergency path already sent STOP.
+            # Do not send another cleanup STOP here; it can look like a small
+            # unexpected movement before recovery HOME starts.
             if buttons is None or not buttons.is_emergency_latched():
+                arm.stop("MOUTH_TRACKING_PHASE_ENDED")
                 try:
                     update_gui_state(
                         "recovery",
