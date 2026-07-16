@@ -1,12 +1,10 @@
 """
-Physical feed / plate / e-stop buttons on Jetson Orin Nano.
+GPIO Pin Header number of Jetson Orin Nano, can be edited, these are working rn
+All set up as active low, so if its released its HIGH, pressed is LOW
+  BOARD pin 35 — plate selection
+  BOARD pin 37 — feed 
+  BOARD pin 33 — emergency stop
 
-Matches `New_Settings_June26/main_controller_phase4.py` wiring:
-  BOARD pin 35 — plate / selection (calibrate)
-  BOARD pin 37 — feed (bite cycle)
-  BOARD pin 33 — emergency stop (active-low)
-
-Set BUTTONS_ENABLED=true with Jetson.GPIO wired.
 """
 
 from __future__ import annotations
@@ -18,9 +16,9 @@ import time
 
 logger = logging.getLogger(__name__)
 
-os.environ.setdefault("JETSON_MODEL_NAME", "JETSON_ORIN_NANO")
+os.environ.setdefault("JETSON_MODEL_NAME", "JETSON_ORIN_NANO") # needed for whenever we use the GPIO pinning, cause it doesn't know jetson board model otherwise, kept getting error without it
 
-
+#converts our text variable to boolean, for whenever we set true and false values
 def _env_bool(key: str, default: bool = False) -> bool:
     raw = os.environ.get(key)
     if raw is None:
@@ -28,27 +26,29 @@ def _env_bool(key: str, default: bool = False) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+#Debouncing all our buttons, 
 class DebouncedButton:
     def __init__(self, gpio, pin: int, debounce_sec: float) -> None:
         self._gpio = gpio
         self.pin = pin
-        self.debounce_sec = debounce_sec
-        self.stable_state = gpio.input(pin)
-        self.last_raw_state = self.stable_state
+        self.debounce_sec = debounce_sec #we set it to .80 ms rn, 
+        self.stable_state = gpio.input(pin) #reads state of initial state of button, the current debounced electrical condition
+        self.last_raw_state = self.stable_state #update the last state of the button to what it is now after a while
         self.last_raw_change_time = time.time()
 
+    #this is called by polling loop, checks whether the stable state got changed
     def update(self, now: float) -> bool:
         raw_state = self._gpio.input(self.pin)
-        if raw_state != self.last_raw_state:
+        if raw_state != self.last_raw_state: #if the electrical signal cahnged, save state and restart the time
             self.last_raw_state = raw_state
             self.last_raw_change_time = now
-        if (now - self.last_raw_change_time) >= self.debounce_sec:
+        if (now - self.last_raw_change_time) >= self.debounce_sec: #if the time the state changed for exceeds our debounce time, then call our transition of state
             if raw_state != self.stable_state:
                 self.stable_state = raw_state
                 return True
         return False
 
-    def is_pressed(self) -> bool:
+    def is_pressed(self) -> bool: #now checks our stable state reading and returns if pressed, our final reading of the button
         return self.stable_state == self._gpio.LOW
 
 
@@ -56,40 +56,46 @@ class ButtonManager:
     def __init__(
         self,
         *,
-        enabled: bool | None = None,
+        enabled: bool | None = None, 
         feed_pin: int | None = None,
         plate_pin: int | None = None,
         estop_pin: int | None = None,
         debounce_ms: int | None = None,
         pin_mode: str | None = None,
     ) -> None:
-        self.enabled = _env_bool("BUTTONS_ENABLED", False) if enabled is None else enabled
-        self.pin_mode = (pin_mode or os.environ.get("GPIO_PIN_MODE", "BOARD")).strip().upper()
-        self.feed_pin = feed_pin if feed_pin is not None else int(os.environ.get("GPIO_FEED_PIN", "37"))
+        self.enabled = _env_bool("BUTTONS_ENABLED", False) if enabled is None else enabled #we can turn off input for buttons if we want to set the state for testing
+        self.pin_mode = (pin_mode or os.environ.get("GPIO_PIN_MODE", "BOARD")).strip().upper() 
+        #defualt values for each pin and setting our debounce time to 80 ms default
+        self.feed_pin = feed_pin if feed_pin is not None else int(os.environ.get("GPIO_FEED_PIN", "37")) 
         self.plate_pin = plate_pin if plate_pin is not None else int(os.environ.get("GPIO_PLATE_PIN", "35"))
         self.estop_pin = estop_pin if estop_pin is not None else int(os.environ.get("GPIO_ESTOP_PIN", "33"))
         debounce = debounce_ms if debounce_ms is not None else int(os.environ.get("GPIO_DEBOUNCE_MS", "80"))
-        self.debounce_sec = debounce / 1000.0
+        self.debounce_sec = debounce / 1000.0 #convert to ms
         self._gpio = None
         self._lock = threading.Lock()
         self._feed_btn: DebouncedButton | None = None
         self._plate_btn: DebouncedButton | None = None
         self._estop_btn: DebouncedButton | None = None
-        self.emergency_latched = False
+
+        
+        self.emergency_latched = False #persistent system emergency condition remains after edge
         self.estop_reported = False
-        self._feed_edge = False
+        #makes sure it only gets the edge states of the buttons, doesnt count holding the button multiple calls; #one time press event waiting to be consumed by queue
+        self._feed_edge = False 
         self._plate_edge = False
         self._estop_edge = False
         self._last_feed_stable = False
         self._last_plate_stable = False
         self._last_estop_stable = False
+
         # After emergency recovery, require the physical e-stop input to be
         # released and stable before it can trigger a new emergency. This
         # prevents the GUI from starting a second 10-second emergency timer
-        # from switch bounce/stale GPIO state while the arm is returning home.
+        # from switch bounce/stale GPIO state while the arm is returning home
         self._estop_rearm_deadline = 0.0
         self._estop_waiting_for_release = False
 
+    #initialization of the gpio buttons, test the importing of each gpio, tries mulitple gpio libraries, lots of safety checks
     def setup(self) -> bool:
         if not self.enabled:
             logger.info("GPIO buttons disabled (BUTTONS_ENABLED=false)")
@@ -111,9 +117,9 @@ class ButtonManager:
                 GPIO.setmode(GPIO.BCM)
             else:
                 GPIO.setmode(GPIO.BOARD)
-            for pin in (self.feed_pin, self.plate_pin, self.estop_pin):
+            for pin in (self.feed_pin, self.plate_pin, self.estop_pin): #set as digital inputs 
                 GPIO.setup(pin, GPIO.IN)
-            self._feed_btn = DebouncedButton(GPIO, self.feed_pin, self.debounce_sec)
+            self._feed_btn = DebouncedButton(GPIO, self.feed_pin, self.debounce_sec) 
             self._plate_btn = DebouncedButton(GPIO, self.plate_pin, self.debounce_sec)
             self._estop_btn = DebouncedButton(GPIO, self.estop_pin, self.debounce_sec)
         except Exception as e:
@@ -131,13 +137,14 @@ class ButtonManager:
         )
         return True
 
+    #Polling of every button, priority emergency button
     def poll(self) -> None:
         if not self.enabled:
             return
         now = time.time()
         if self._estop_btn and self._estop_btn.update(now):
             pressed = self._estop_btn.is_pressed()
-            if not pressed and self._estop_waiting_for_release and now >= self._estop_rearm_deadline:
+            if not pressed and self._estop_waiting_for_release and now >= self._estop_rearm_deadline: #after pressed, theres a lockout to let arm go through recovery default phase
                 self._estop_waiting_for_release = False
                 logger.info("[ESTOP] Physical e-stop released; input re-armed")
             if pressed and not self._last_estop_stable:
@@ -147,12 +154,12 @@ class ButtonManager:
                 else:
                     logger.info("[ESTOP] Ignoring e-stop edge until release/cooldown completes")
             self._last_estop_stable = pressed
-        if self._feed_btn and self._feed_btn.update(now):
+        if self._feed_btn and self._feed_btn.update(now): #2nd priority feed button, polling for this
             pressed = self._feed_btn.is_pressed()
             if pressed and not self._last_feed_stable:
                 self._feed_edge = True
             self._last_feed_stable = pressed
-        if self._plate_btn and self._plate_btn.update(now):
+        if self._plate_btn and self._plate_btn.update(now): #last priority select
             pressed = self._plate_btn.is_pressed()
             if pressed and not self._last_plate_stable:
                 self._plate_edge = True
@@ -197,7 +204,7 @@ class ButtonManager:
         if self._estop_waiting_for_release:
             # If the release happened before cooldown ended, there may be no new
             # GPIO edge when the cooldown expires. Re-arm here once both
-            # conditions are true: cooldown elapsed and raw pin is released.
+            # conditions are true: cooldown elapsed and raw pin is released, stop the double emergency 
             if now >= self._estop_rearm_deadline and not self.estop_raw_pressed():
                 self._estop_waiting_for_release = False
                 logger.info("[ESTOP] Physical e-stop released; input re-armed")

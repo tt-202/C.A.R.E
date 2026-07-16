@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 ROOT_DIR = Path(__file__).resolve().parent
 GUI_PROCESS_FILE = ROOT_DIR / "lcd_display.py"
 
+#All of our messages
 GUI_MESSAGES = {
     "startup": "Jetson controller starting",
     "ready_needs_scan": "Press SELECT once to scan plate position",
@@ -67,14 +68,14 @@ _last_gui_payload: dict | None = None
 _last_gui_update_time = 0.0
 GUI_MIN_UPDATE_PERIOD = 0.50
 
-
+#checks if the gui is enables
 def _gui_enabled() -> bool:
     raw = os.environ.get("LCD_GUI_ENABLED")
     if raw is None:
         return bool(os.environ.get("DISPLAY"))
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
-
+#start the actually gui
 def start_gui_process() -> None:
     global _gui_process
 
@@ -104,7 +105,7 @@ def start_gui_process() -> None:
         _gui_process = None
         logger.warning("[GUI] Could not start LCD GUI: %s", e)
 
-
+#sends all the information of the GUI updates
 def _send_gui_payload(payload: dict) -> None:
     global _gui_process
 

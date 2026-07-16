@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-Listen for Firestore robot commands and run them on myCobot 320 (Jetson Orin Nano).
 
-Setup:
-  python3 -m venv venv && source venv/bin/activate
-  pip install -r requirements.txt
-  cp .env.example .env   # edit paths
-  python3 worker.py      # loads .env automatically
-"""
 
 from __future__ import annotations
 
@@ -22,16 +14,18 @@ from typing import Any
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-from gpio_buttons import ButtonManager, ButtonPoller
+from gpio_buttons import ButtonManager, ButtonPoller 
 from feeding_cycle import execute_home
 from robot_motion import execute_command
 from robot_session import (
-    end_feed_cycle,
-    get_selected_section,
-    is_apriltag_scan_done,
-    is_feeding_active,
-    mark_emergency_state,
+    end_feed_cycle, #release feed cycle after emergency recovery
+    get_selected_section, #determines which plate selection FEED should use 
+    is_apriltag_scan_done, #to make first phase of feed view april tag
+    is_feeding_active, #prevents feed or select from interrupting on existing feeding cycle
+    mark_emergency_state, #flag to mark emergency is interrupting something
 )
+
+#updates the firestore documents
 from robot_stats import (
     after_successful_feed,
     mark_jetson_online,
@@ -47,10 +41,10 @@ from estop_hooks import set_estop_callback
 from lcd_gui import GUI_MESSAGES, start_gui_process, stop_gui_process, update_gui_state
 from pi_arm_client import PiArmClient
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s") #sets logging format
 logger = logging.getLogger("care-robot-worker")
 
-ALLOWED = frozenset({"home", "next_bite", "pause", "stop", "calibrate_plate"})
+ALLOWED = frozenset({"home", "next_bite", "pause", "stop", "calibrate_plate"}) #allowed firestore commands, nothing else is rendered
 
 _ROOT = Path(__file__).resolve().parent
 _ENV_LOADED = False
@@ -58,7 +52,7 @@ _active_buttons: ButtonManager | None = None
 _emergency_recovery_deadline: float | None = None
 _emergency_home_in_progress = False
 
-
+#loads all our env values
 def _load_dotenv() -> None:
     """Load app/robot-worker/.env (does not override existing shell env)."""
     global _ENV_LOADED
@@ -83,14 +77,18 @@ def _load_dotenv() -> None:
             os.environ[key] = value
     _ENV_LOADED = True
 
-
+#converts firestore credential paths from env
 def _resolve_credentials_path(raw: str) -> str:
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = (_ROOT / path).resolve()
     return str(path)
 
+# def _resolve_credentials_path(raw: str) -> str:
+#     path = Path(raw).expanduser()
+#     return str(path)
 
+#pull more important information from env
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -102,7 +100,7 @@ def robot_id() -> str:
 def commands_col(db: firestore.Client) -> firestore.CollectionReference:
     return db.collection("robots").document(robot_id()).collection("commands")
 
-
+#returns firestore command to robot
 @firestore.transactional
 def _claim_transaction(transaction: firestore.Transaction, ref: firestore.DocumentReference) -> bool:
     snap = ref.get(transaction=transaction)
@@ -114,11 +112,11 @@ def _claim_transaction(transaction: firestore.Transaction, ref: firestore.Docume
     transaction.update(ref, {"status": "running", "updatedAt": utc_now()})
     return True
 
-
+#function claims pending firestore command
 def claim_command(db: firestore.Client, ref: firestore.DocumentReference) -> bool:
     return _claim_transaction(db.transaction(), ref)
 
-
+#tells app that and ack end of done
 def finish_command(
     ref: firestore.DocumentReference,
     *,
@@ -133,7 +131,7 @@ def finish_command(
         }
     )
 
-
+#app update od section
 def current_section(db: firestore.Client, rid: str) -> int:
     live = db.collection("robots").document(rid).collection("status").document("live").get()
     data = live.to_dict() or {}
@@ -142,7 +140,7 @@ def current_section(db: firestore.Client, rid: str) -> int:
         return section
     return 1
 
-
+#gpio read of feed
 def handle_gpio_feed(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
     if buttons.is_emergency_latched():
         logger.warning("GPIO feed ignored — emergency latched")
@@ -178,7 +176,7 @@ def handle_gpio_feed(db: firestore.Client, rid: str, buttons: ButtonManager) -> 
         after_successful_feed(db, rid, section, pin=buttons.feed_pin)
         logger.info("GPIO feed button → bite section=%s", section)
 
-
+#gpio for selectino, first checks if other states are set
 def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
     if buttons.is_emergency_latched():
         logger.warning("GPIO plate ignored — emergency latched")
@@ -214,7 +212,7 @@ def handle_gpio_plate(db: firestore.Client, rid: str, buttons: ButtonManager) ->
         record_failed_feed(db, rid)
         set_live_state(db, rid, state="IDLE", section=get_selected_section(), emergency=False)
 
-
+#gets the seconds for emergency recovery seoconds
 def _get_emergency_recovery_seconds() -> float:
     """Return the emergency hold time before automatic HOME recovery."""
     raw = os.environ.get("EMERGENCY_RECOVERY_SECONDS", "0")
@@ -224,7 +222,7 @@ def _get_emergency_recovery_seconds() -> float:
         logger.warning("Invalid EMERGENCY_RECOVERY_SECONDS=%r; using 0", raw)
         return 0.0
 
-
+#reads delay before e-stop can retrogger, helps stop doubling up on the estop
 def _get_estop_rearm_cooldown_seconds() -> float:
     """Return the cooldown after emergency recovery before e-stop can retrigger."""
     raw = os.environ.get("ESTOP_REARM_COOLDOWN_SECONDS", "2.0")
@@ -250,9 +248,9 @@ def handle_emergency_recovery(db: firestore.Client, rid: str, buttons: ButtonMan
     now = time.time()
     emergency_recovery_seconds = _get_emergency_recovery_seconds()
 
-    # If the requested emergency hold is zero, do not show/enter the timed
-    # emergency_wait state at all. This avoids the apparent second 10-second wait
-    # when .env is missing, stale, or not copied to the Jetson.
+    # If the requested emergency hold is zero, do not show/enter timed
+    # emergency_wait state at all. This avoids second 10-second wait
+
     if emergency_recovery_seconds > 0:
         if _emergency_recovery_deadline is None:
             _emergency_recovery_deadline = now + emergency_recovery_seconds
@@ -283,9 +281,8 @@ def handle_emergency_recovery(db: firestore.Client, rid: str, buttons: ButtonMan
         buttons.clear_emergency_latch()
         _emergency_recovery_deadline = None
 
-        # Keep the physical e-stop disarmed until it has been released and a
-        # short cooldown has passed. This prevents a held/bouncing e-stop pin
-        # from starting a second GUI 10-second countdown after HOME begins.
+        # Keep the physical e-stop disarmed until it has been released and a short cooldown has passed. This prevents bouncing e-stop pin
+        # from starting a second GUI 10-second countdown after HOME begins
         buttons.estop_reported = True
         buttons.disarm_estop_until_release(_get_estop_rearm_cooldown_seconds())
 
@@ -304,11 +301,13 @@ def handle_emergency_recovery(db: firestore.Client, rid: str, buttons: ButtonMan
         _emergency_home_in_progress = False
 
 
+    #physical button estop
 def handle_gpio_estop(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
-    """Physical e-stop: STOP arm first, then Firestore, then caregiver push."""
+   
     if buttons.estop_reported:
         return
     buttons.estop_reported = True
+    #logs to statistics system, update
     _run_emergency_stop(
         db,
         rid,
@@ -317,9 +316,8 @@ def handle_gpio_estop(db: firestore.Client, rid: str, buttons: ButtonManager) ->
         pin=buttons.estop_pin,
     )
 
-
+#app estop
 def handle_app_estop(db: firestore.Client, rid: str, buttons: ButtonManager) -> None:
-    """Care-app emergency stop — same arm STOP + latch + recovery as physical e-stop."""
     if buttons.is_emergency_latched():
         logger.warning("App e-stop while emergency already latched — re-sending STOP")
         try:
@@ -337,7 +335,7 @@ def handle_app_estop(db: firestore.Client, rid: str, buttons: ButtonManager) -> 
         pin=None,
     )
 
-
+#emergency routine for both app and physical button
 def _run_emergency_stop(
     db: firestore.Client,
     rid: str,
@@ -379,9 +377,8 @@ def _run_emergency_stop(
         except Exception:
             logger.exception("Emergency stop: app backend notify failed")
 
-
+#sees if firestore changed any command or added anything
 def _change_is_added_or_modified(change: Any) -> bool:
-    """Works across firebase-admin / google-cloud-firestore versions on Jetson."""
     t = getattr(change, "type", None)
     if t is None:
         return False
@@ -394,6 +391,7 @@ def _change_is_added_or_modified(change: Any) -> bool:
     return text.endswith("ADDED") or text.endswith("MODIFIED")
 
 
+#handles a firestore command from mobile app backend
 def process_change(db: firestore.Client, col: firestore.CollectionReference, change: Any) -> None:
     if not _change_is_added_or_modified(change):
         return
@@ -418,6 +416,7 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
                 execute_command("stop", payload, db=db, robot_id=rid)
             completed = False
         else:
+            #normal command routing
             completed = execute_command(
                 str(cmd),
                 payload if isinstance(payload, dict) else None,
@@ -425,11 +424,14 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
                 db=db,
                 robot_id=rid,
             )
+        #mark command as done
         finish_command(ref, ok=True)
+        #command statstics , only update if bite is actually done
         if cmd == "next_bite" and completed:
             section = get_selected_section()
             if isinstance(payload, dict) and isinstance(payload.get("sectionNum"), int):
                 section = payload["sectionNum"]
+
             if not is_feeding_active():
                 feed_pin = int(os.environ.get("GPIO_FEED_PIN", "37"))
                 after_successful_feed(db, rid, section, pin=feed_pin)
@@ -439,6 +441,7 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
         elif cmd in ("home", "pause"):
             reset_meal_session(db, rid, emergency=False)
         logger.info("done %s cmd=%s", snap.id, cmd)
+    #failure handling
     except Exception as e:
         logger.exception("command %s failed", snap.id)
         record_failed_feed(db, rid)
@@ -447,9 +450,11 @@ def process_change(db: firestore.Client, col: firestore.CollectionReference, cha
 
 
 def main() -> int:
+    #sets up the important information of connection and environemnt
     os.environ.setdefault("JETSON_MODEL_NAME", "JETSON_ORIN_NANO")
     _load_dotenv()
     raw_cred = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+
     if not raw_cred:
         logger.error("GOOGLE_APPLICATION_CREDENTIALS is not set. Add it to %s/.env", _ROOT)
         return 1
@@ -463,6 +468,7 @@ def main() -> int:
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = cred_path
 
     try:
+        #fireabase initialization
         if not firebase_admin._apps:
             cred = credentials.Certificate(cred_path)
             firebase_admin.initialize_app(cred)
@@ -473,6 +479,7 @@ def main() -> int:
     rid = robot_id()
     mark_jetson_online(db, rid)
 
+    #start the gui process updates where we are
     start_gui_process()
     update_gui_state(
         "startup",
@@ -484,6 +491,7 @@ def main() -> int:
 
     pi_connected = False
     try:
+        #try the rasbperry pi connection
         with PiArmClient() as arm:
             arm.ping()
         pi_connected = True
@@ -493,10 +501,11 @@ def main() -> int:
     try:
         from yolo_detector import preload_yolo_models
 
-        preload_yolo_models()
+        preload_yolo_models() #preloads models so we dont have to wait for first feed (helps with latency)
     except Exception:
         logger.warning("YOLO preload skipped", exc_info=True)
 
+    #gui update for the april tag
     update_gui_state(
         "idle",
         GUI_MESSAGES["ready_needs_scan"],
@@ -507,12 +516,14 @@ def main() -> int:
     )
 
     buttons = ButtonManager()
+    #publishes manager to the FireStore command handler, both point to ButtonManager object
     global _active_buttons
     _active_buttons = buttons
-    buttons.setup()
-    set_estop_callback(lambda: handle_gpio_estop(db, rid, buttons))
+    buttons.setup() #buttonmanager sets up all the gpio pin
+    set_estop_callback(lambda: handle_gpio_estop(db, rid, buttons)) #immediate ESTOP callback, it doesn't have to read everything about GUI, movement and such
     poller = ButtonPoller(buttons)
     poller.start()
+    #firestore listener setup   
     col = commands_col(db)
     try:
         from google.cloud.firestore_v1.base_query import FieldFilter
@@ -533,26 +544,29 @@ def main() -> int:
     )
     query.on_snapshot(on_snapshot)
 
+    #heartbeat setup
     heartbeat_seconds = float(os.environ.get("FIRESTORE_HEARTBEAT_SECONDS", "45"))
     last_heartbeat = time.monotonic()
 
     try:
+        #keeps worker loop going
         while True:
+            #ESTOP trop priority, then feed, then select
             if buttons.enabled:
-                if (
-                    buttons.estop_can_trigger()
+                if (    #all three must be correct, this makes sure that estop is newly pressed
+                    buttons.estop_can_trigger() #is estop already triggered/armed
                     and not buttons.estop_reported
                     and (buttons.estop_pressed() or buttons.estop_raw_pressed())
                 ):
-                    handle_gpio_estop(db, rid, buttons)
-                elif (
+                    handle_gpio_estop(db, rid, buttons) #call estop handler
+                elif ( #rearms only if all are true
                     buttons.estop_reported
                     and buttons.estop_can_trigger()
                     and not buttons.is_emergency_latched()
                     and not buttons.estop_raw_pressed()
                 ):
                     buttons.estop_reported = False
-                elif buttons.is_emergency_latched():
+                elif buttons.is_emergency_latched(): #if emergency button is latched, nothing else gets checked
                     handle_emergency_recovery(db, rid, buttons)
                     time.sleep(0.05)
                 elif buttons.feed_pressed():
@@ -566,6 +580,7 @@ def main() -> int:
             time.sleep(0.05)
     except KeyboardInterrupt:
         logger.info("stopped")
+    #always release GPIO stop polling
     finally:
         poller.stop()
         buttons.cleanup()

@@ -1,49 +1,41 @@
-# Pi arm server (MyCobot 320 Pi)
+# Pi arm server
 
-JSON TCP server for the MyCobot 320. The Jetson `robot-worker` sends one JSON object per line.
+Runs on the MyCobot’s Raspberry Pi. Jetson sends one JSON command per line on port **5002**.
 
-Based on `New_Settings_June26_raspberry/pi_arm_server.py`.
-
-## Run on the Pi
+## Run
 
 ```bash
 cd app/pi-server
 pip3 install pymycobot
-cp .env.example .env   # optional: faster scoop / view / approach timings
+cp .env.example .env   # optional timing tweaks
 python3 pi_arm_server.py
 ```
 
-Listens on port **5002**. Set `PI_IP` and `PI_PORT=5002` in `robot-worker/.env`.
+On the Jetson, set `PI_IP` and `PI_PORT=5002` in `robot-worker/.env`.
 
-## Motion tuning (~30s feed cycle)
+## Commands we care about
 
-`pi_arm_server.py` reads optional `app/pi-server/.env` on startup:
+| cmd | What it does |
+|-----|----------------|
+| `PING` | Hello |
+| `VIEW_SELECTION` | Look at the plate |
+| `VIEW_MOUTH` | Feeding pose |
+| `SCOOP` | Scoop section 1–4 |
+| `ALIGN` | Nudge toward the mouth |
+| `APPROACH_MOUTH` | Step forward (ToF) |
+| `BITE_HOLD_READY` | Freeze for the bite |
+| `STOP` | Stop now |
+| `HOME` | Back to startup angles |
 
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `SCOOP_WAIT_SCALE` | `0.55` | Shorter pause between scoop waypoints |
-| `VIEW_SPEED` | `12` | Faster selection / mouth view moves |
-| `VIEW_MOUTH_WAIT` | `2.5` | Seconds after mouth view command |
-| `HOME_RETURN_WAIT` | `4.0` | Seconds after HOME angle command |
-| `APPROACH_STEP_Y` | `3.0` | Larger forward steps during ToF approach |
-| `APPROACH_SPEED` | `12` | Approach move speed |
-| `TRACK_SPEED` | `65` | Mouth alignment correction speed |
-| `ALIGN_PIXEL_THRESHOLD` | `25` | Pi aligns when error exceeds this (match Jetson `CENTER_TOLERANCE`) |
+Scoop paths and poses are hardcoded in `pi_arm_server.py` — edit there if the physical setup changes.
 
-If scoop misses food after speeding up, raise `SCOOP_WAIT_SCALE` toward `1.0`.
+## Speeding things up
 
-## JSON commands
+Copy `.env.example` → `.env`. Useful knobs:
 
-| cmd | Action |
-|-----|--------|
-| `PING` | Handshake |
-| `VIEW_SELECTION` | Plate / AprilTag view |
-| `VIEW_MOUTH` | Mouth tracking view |
-| `SCOOP` | Fixed scoop trajectory (`section` 1–4) |
-| `ALIGN` | X/Z mouth alignment (`error_x`, `error_y`) |
-| `CENTERED` | Hold ready state |
-| `APPROACH_MOUTH` | One Y step toward user (`tof_cm`) |
-| `STOP` | Stop motion |
-| `HOME` | Return to startup joint angles |
+- `SCOOP_WAIT_SCALE` — lower = faster scoop (try `0.55`; bump toward `1.0` if it misses food)
+- `VIEW_MOUTH_WAIT` / `HOME_RETURN_WAIT` — how long we wait after those moves
+- `APPROACH_STEP_Y` / `APPROACH_SPEED` — how aggressive the mouth approach is
+- `ALIGN_DOMINANT_AXIS_ONLY` — one axis per ALIGN (less jitter)
 
-Tune `SCOOP_TRAJECTORIES`, `MOUTH_VIEW`, and `SELECTION_VIEW` in `pi_arm_server.py`.
+Restart the server after changing `.env`.

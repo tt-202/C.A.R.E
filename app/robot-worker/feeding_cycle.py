@@ -1,5 +1,4 @@
 """
-Feeding cycle for Jetson + Pi JSON arm server (New_Settings_June26).
 
 One bite:
   1. SCOOP          — fixed trajectory for selected plate section (Pi)
@@ -26,22 +25,22 @@ os.environ.setdefault("JETSON_MODEL_NAME", "JETSON_ORIN_NANO")
 
 from pi_arm_client import PiArmClient, wait_after_move
 from robot_session import (
-    end_feed_cycle,
-    get_selected_section,
-    is_feeding_active,
-    mark_apriltag_scan_done,
-    mark_emergency_state,
-    set_robot_view,
-    set_system_state,
-    start_feed_cycle,
+    end_feed_cycle, #unlocks control after HOME
+    get_selected_section, #gives current section if none is passed
+    is_feeding_active, #if feeding active, normal home
+    mark_apriltag_scan_done, #allows feed to happen after feed butotn, instead of april tag read
+    mark_emergency_state, #record to feed interruption after emergency
+    set_robot_view, #recrods what view the robotic arm is in
+    set_system_state, 
+    start_feed_cycle, #locks more feed and select processes to run, cause its scooping
 )
 from tof_subprocess import read_tof_cm_safe, start_tof_reader, stop_tof_reader, use_fake_tof
 from lcd_gui import GUI_MESSAGES, update_gui_state
-from robot_feeding_config import read_bite_hold_seconds
+from robot_feeding_config import read_bite_hold_seconds #reads bite hold from env or the app (firestore)
 from yolo_gates import (
-    ensure_plate_has_food_before_feed,
-    run_plate_yolo_check,
-    run_spoon_yolo_check_after_scoop,
+    ensure_plate_has_food_before_feed, #runs before feed starts, 
+    run_plate_yolo_check, #updates plate food cache while camera is already looking at plate
+    run_spoon_yolo_check_after_scoop, #is there food on the spoon
 )
 
 if TYPE_CHECKING:
@@ -52,29 +51,35 @@ logger = logging.getLogger(__name__)
 
 ROOT_DIR = Path(__file__).resolve().parent
 
+#camera configuration
 CAMERA_ID = os.environ.get("CAMERA_ID", "/dev/video0")
 CAMERA_WIDTH = int(os.environ.get("CAMERA_WIDTH", "640"))
 CAMERA_HEIGHT = int(os.environ.get("CAMERA_HEIGHT", "480"))
+#how tolerant the circle radius of mouth centering
 CENTER_TOLERANCE = int(
     os.environ.get("CENTER_TOLERANCE", os.environ.get("DEAD_ZONE_PX", "30"))
 )
+# Settings for feeding
 CENTER_HOLD_SECONDS = float(os.environ.get("CENTER_HOLD_SECONDS", "1.5"))
-STOP_DISTANCE_CM = float(os.environ.get("STOP_DISTANCE_CM", "50.0"))
-STOP_DISTANCE_STABLE_SECONDS = float(os.environ.get("STOP_DISTANCE_STABLE_SECONDS", "1.0"))
+STOP_DISTANCE_CM = float(os.environ.get("STOP_DISTANCE_CM", "50.0")) #how far before the tof stops the arm from moving
+STOP_DISTANCE_STABLE_SECONDS = float(os.environ.get("STOP_DISTANCE_STABLE_SECONDS", "1.0")) #how long it has to be stable before it goes back to default
 BITE_HOLD_SECONDS = float(os.environ.get("BITE_HOLD_SECONDS", "2.0"))
-APPROACH_COMMAND_PERIOD = float(os.environ.get("APPROACH_COMMAND_PERIOD", "0.12"))
-ALIGN_COMMAND_PERIOD = float(os.environ.get("ALIGN_COMMAND_PERIOD", "0.20"))
-TRACK_LIMIT_GUI_COOLDOWN = float(os.environ.get("TRACK_LIMIT_GUI_COOLDOWN", "1.0"))
-MAX_APPROACH_SECONDS = float(os.environ.get("MAX_APPROACH_SECONDS", "8.0"))
+APPROACH_COMMAND_PERIOD = float(os.environ.get("APPROACH_COMMAND_PERIOD", "0.12")) #limits frequency of the jetson sends approach mouth command
+ALIGN_COMMAND_PERIOD = float(os.environ.get("ALIGN_COMMAND_PERIOD", "0.20")) #limits frequency jetson can send align command
+TRACK_LIMIT_GUI_COOLDOWN = float(os.environ.get("TRACK_LIMIT_GUI_COOLDOWN", "1.0")) #limit the updating of gui screen
+MAX_APPROACH_SECONDS = float(os.environ.get("MAX_APPROACH_SECONDS", "8.0")) #how long the arm can approach for, so its not infinite
 LOOP_DELAY = float(os.environ.get("LOOP_DELAY", "0.02"))
 VIEW_SETTLE_SECONDS = float(os.environ.get("ARM_MOVE_SETTLE", "0.5"))
 MOUTH_TRACK_WIDTH = int(os.environ.get("MOUTH_TRACK_WIDTH", "480"))
 MOUTH_TRACK_HEIGHT = int(os.environ.get("MOUTH_TRACK_HEIGHT", "360"))
+
+# MEdia Pipe Configuration, confidences for mouth tracking
 MOUTH_REFINE_LANDMARKS = os.environ.get("MOUTH_REFINE_LANDMARKS", "false").lower() in (
     "1",
     "true",
     "yes",
 )
+#how certain it needs to be, before it identifes mouth 
 MOUTH_MIN_DETECTION_CONFIDENCE = float(os.environ.get("MOUTH_MIN_DETECTION_CONFIDENCE", "0.55"))
 MOUTH_MIN_TRACKING_CONFIDENCE = float(os.environ.get("MOUTH_MIN_TRACKING_CONFIDENCE", "0.55"))
 SHOW_APRILTAG_PREVIEW = os.environ.get("SHOW_APRILTAG_PREVIEW", "true").lower() in (
@@ -82,18 +87,19 @@ SHOW_APRILTAG_PREVIEW = os.environ.get("SHOW_APRILTAG_PREVIEW", "true").lower() 
     "true",
     "yes",
 )
+# Whehter preview gui shows for april tag
 SHOW_MOUTH_PREVIEW = os.environ.get("SHOW_MOUTH_PREVIEW", "false").lower() in (
     "1",
     "true",
     "yes",
 )
-MOUTH_SESSION_TIMEOUT = float(os.environ.get("MOUTH_SESSION_TIMEOUT", "0"))
+MOUTH_SESSION_TIMEOUT = float(os.environ.get("MOUTH_SESSION_TIMEOUT", "0")) #right now, there is no strong timeout 
 
-
-def _dry_run() -> bool:
+#decides whether the robot will move or not, was for earlier when we were testing just outputs
+def _dry_run() -> bool: 
     return os.environ.get("DRY_RUN", "true").lower() in ("1", "true", "yes")
 
-
+# gets height of image mediapipe is taking, then gets center of x and y
 def get_mouth_center(landmarks, w: int, h: int) -> tuple[int, int]:
     left = landmarks[61]
     right = landmarks[291]
@@ -101,7 +107,7 @@ def get_mouth_center(landmarks, w: int, h: int) -> tuple[int, int]:
     y = int(((left.y + right.y) / 2) * h)
     return x, y
 
-
+#hints at the user where to move when tracking, so it doesnt get stuck
 def _track_limit_message(limit_hits: list[dict] | None) -> str | None:
     if not limit_hits:
         return None
@@ -122,7 +128,7 @@ def _track_limit_message(limit_hits: list[dict] | None) -> str | None:
     }
     return message_map.get(hint, message_map["ADJUST_POSITION"])
 
-
+#loads the april tag results
 def _load_plate_scan_module():
     scan_file = ROOT_DIR / "latest_plate_scan.py"
     if not scan_file.exists():
@@ -134,7 +140,7 @@ def _load_plate_scan_module():
     spec.loader.exec_module(module)
     return module
 
-
+#homing arm , differentiates between recovery or feeding homing
 def _home_arm(arm: PiArmClient, reason: str) -> None:
     set_system_state(
         "FEEDING_RETURN_HOME" if is_feeding_active() else "RECOVERY_HOME",
@@ -143,7 +149,7 @@ def _home_arm(arm: PiArmClient, reason: str) -> None:
     arm.home(reason)
     set_robot_view("home")
 
-
+#this checks emergency in the long motions of feeding, it can only act after a stop point
 def _estop_during_motion(buttons: ButtonManager | None, arm: PiArmClient, reason: str) -> bool:
     if buttons is None:
         return False
@@ -152,25 +158,29 @@ def _estop_during_motion(buttons: ButtonManager | None, arm: PiArmClient, reason
     if buttons.is_emergency_latched():
         logger.warning("[ESTOP] %s — sending STOP", reason)
         try:
+            #helper that will send the stop for estop
             arm.stop(reason)
         except Exception:
             logger.exception("Failed to send STOP during estop")
         return True
     return False
 
-
+# runs initial april tag scan
 def run_apriltag_selection_phase(arm: PiArmClient, *, preview: bool = False) -> bool:
-    """VIEW_SELECTION + AprilTag scan. Returns True on success."""
+
+    #only update information
     if _dry_run():
         logger.info("DRY_RUN apriltag selection phase")
         time.sleep(1.0)
         mark_apriltag_scan_done()
         return True
 
+    #move arm to selection_view,  
     arm.view_selection()
     set_robot_view("selection")
     time.sleep(VIEW_SETTLE_SECONDS)
 
+    
     update_gui_state(
         "selection",
         GUI_MESSAGES["apriltag_scan_start"],
@@ -200,7 +210,9 @@ def run_apriltag_selection_phase(arm: PiArmClient, *, preview: bool = False) -> 
         )
         return False
 
+    # updates state in robot_session
     mark_apriltag_scan_done()
+
     update_gui_state(
         "idle",
         GUI_MESSAGES["apriltag_scan_success"],
@@ -211,7 +223,7 @@ def run_apriltag_selection_phase(arm: PiArmClient, *, preview: bool = False) -> 
     logger.info("AprilTag scan completed for this run")
     return True
 
-
+# adds plate yolo verification and makes sure pi is connected, validates if the april tag file was created
 def calibrate_plate(
     *,
     preview: bool = False,
@@ -240,22 +252,21 @@ def calibrate_plate(
         "plate_z_cm": getattr(plate, "PLATE_Z_CM", 25.0) if plate else 25.0,
     }
 
-
+#entire mouth_delivery session after successful scoop, all the way to home
 def run_mouth_feed_session(
     arm: PiArmClient,
     buttons: ButtonManager | None = None,
     *,
     bite_hold_seconds: float | None = None,
 ) -> bool:
-    """
-    Mouth tracking + ToF approach + bite hold + HOME.
-    Returns True if bite completed and arm homed successfully.
-    """
+
+    #resolve bite hold duration
     hold_seconds = (
         float(bite_hold_seconds)
         if bite_hold_seconds is not None
         else BITE_HOLD_SECONDS
     )
+    # Dry run behavior
     if _dry_run():
         logger.info(
             "DRY_RUN mouth_feed_session (hold=%.1fs, stop=%.1fcm, bite_hold=%.1fs)",
@@ -269,8 +280,10 @@ def run_mouth_feed_session(
     import cv2
     import mediapipe as mp
 
+    # clear previous emergency latch, checks again in function if emergency latch is pressed again
     if buttons is not None:
         buttons.clear_emergency_latch()
+        #checks physical ESTOP
         if buttons.estop_raw_pressed():
             buttons.latch_emergency("EMERGENCY_BEFORE_MOUTH_TRACKING")
             arm.stop("EMERGENCY_BEFORE_MOUTH_TRACKING")
@@ -280,6 +293,7 @@ def run_mouth_feed_session(
     set_robot_view("mouth")
     time.sleep(VIEW_SETTLE_SECONDS)
 
+    #tells user is going to mouth tracking
     update_gui_state(
         "mouth_tracking_starting",
         "Moving to mouth tracking view",
@@ -288,10 +302,13 @@ def run_mouth_feed_session(
         force=True,
     )
 
+    #code waits for feed release, before another feed
     if buttons is not None:
         buttons.wait_for_feed_release()
 
+    # initialize all the mediapipe face mesh
     try:
+        #initalize media pipe
         face_mesh = mp.solutions.face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=1,
@@ -307,6 +324,7 @@ def run_mouth_feed_session(
             ) from exc
         raise
 
+    #opens camera
     cap = cv2.VideoCapture(CAMERA_ID, cv2.CAP_V4L2)
     if not cap.isOpened():
         face_mesh.close()
@@ -315,6 +333,7 @@ def run_mouth_feed_session(
     if not use_fake_tof():
         start_tof_reader()
 
+    #initialize control state variables for mouth session
     center_start_time: float | None = None
     approach_active = False
     approach_start_time: float | None = None
@@ -331,6 +350,7 @@ def run_mouth_feed_session(
         time.time() + MOUTH_SESSION_TIMEOUT if MOUTH_SESSION_TIMEOUT > 0 else None
     )
 
+    #update the gui state
     logger.info(
         "Mouth tracking (track=%dx%d, hold=%.1fs, stop=%.1fcm stable=%.1fs, bite_hold=%.1fs, fake_tof=%s)",
         MOUTH_TRACK_WIDTH,
@@ -342,6 +362,7 @@ def run_mouth_feed_session(
         use_fake_tof(),
     )
 
+    #repeats reading processing for media pipe after checking for emergency state
     try:
         while True:
             if deadline is not None and time.time() > deadline:
@@ -350,13 +371,16 @@ def run_mouth_feed_session(
 
             now = time.time()
 
+            #breaks out if estop is activated during feeding
             if _estop_during_motion(buttons, arm, "EMERGENCY_BUTTON_MOUTH_TRACKING"):
                 break
-
+            
+            #breaks out if emergency is latched
             if buttons is not None and buttons.is_emergency_latched():
                 arm.stop("EMERGENCY_LATCHED")
                 break
 
+            #ignores feed if its already active
             if buttons is not None and buttons.feed_raw_pressed():
                 logger.info("[FEED] Ignored during active feed cycle")
                 update_gui_state(
@@ -366,6 +390,7 @@ def run_mouth_feed_session(
                 )
                 buttons.wait_for_feed_release(timeout=0.5)
 
+            #ignore select during feed
             if buttons is not None and buttons.plate_raw_pressed():
                 logger.info("[SELECT] Ignored during feeding phase")
                 update_gui_state(
@@ -375,39 +400,46 @@ def run_mouth_feed_session(
                 )
                 buttons.wait_for_plate_release(timeout=0.5)
 
+            #read newest tof measure
             tof_reading = read_tof_cm_safe()
             if tof_reading is not None:
                 last_valid_tof_cm = tof_reading
-                if now - last_tof_print_time >= 0.5:
+                if now - last_tof_print_time >= 0.5: #paces the command "ALIGN"
                     logger.info("[TOF] Latest distance: %.1f cm", last_valid_tof_cm)
                     last_tof_print_time = now
 
-            ret, frame = cap.read()
+            ret, frame = cap.read() #capture frame
+
+            #camera failure to capture, repeats if failed
             if not ret:
                 time.sleep(LOOP_DELAY)
                 continue
 
+            #resize to our resolution
             if frame.shape[1] != MOUTH_TRACK_WIDTH or frame.shape[0] != MOUTH_TRACK_HEIGHT:
                 track_frame = cv2.resize(frame, (MOUTH_TRACK_WIDTH, MOUTH_TRACK_HEIGHT))
             else:
                 track_frame = frame
-            h, w, _ = track_frame.shape
-            results = face_mesh.process(cv2.cvtColor(track_frame, cv2.COLOR_BGR2RGB))
-
+            h, w, _ = track_frame.shape #read processed frame dimensions
+            results = face_mesh.process(cv2.cvtColor(track_frame, cv2.COLOR_BGR2RGB)) #convert bgr to rgb
+            
+            
             if results.multi_face_landmarks:
                 landmarks = results.multi_face_landmarks[0].landmark
-                mx, my = get_mouth_center(landmarks, w, h)
-                cx, cy = w // 2, h // 2
+                mx, my = get_mouth_center(landmarks, w, h) 
+                cx, cy = w // 2, h // 2 #calculate image center
+                #image center
                 error_x = mx - cx
                 error_y = my - cy
                 is_centered = (
                     abs(error_x) < CENTER_TOLERANCE and abs(error_y) < CENTER_TOLERANCE
                 )
 
+                #determines if mouth is centered
                 if is_centered:
                     if center_start_time is None:
                         center_start_time = now
-                    centered_duration = now - center_start_time
+                    centered_duration = now - center_start_time #calc how long mouth has been centered
                     arm.centered()
 
                     if now - last_tracking_gui_time >= 1.0:
@@ -416,7 +448,7 @@ def run_mouth_feed_session(
                             f"Mouth centered for {centered_duration:.1f} sec",
                             connected=True,
                         )
-                        last_tracking_gui_time = now
+                        last_tracking_gui_time = now #gui updated at most once per second
 
                     if centered_duration >= CENTER_HOLD_SECONDS and not approach_active:
                         logger.info("[MOUTH] Centered %.1fs — approach allowed", centered_duration)
@@ -463,14 +495,14 @@ def run_mouth_feed_session(
                                 connected=True,
                                 force=True,
                             )
-                            last_limit_gui_time = now
+                            last_limit_gui_time = now #reset gui timer      
 
                 if approach_active:
-                    if _estop_during_motion(buttons, arm, "EMERGENCY_DURING_APPROACH"):
-                        approach_active = False
+                    if _estop_during_motion(buttons, arm, "EMERGENCY_DURING_APPROACH"): #check estop latch just in case,
+                        approach_active = False 
                         break
 
-                    if approach_start_time is None:
+                    if approach_start_time is None: #set start time if nothing got set
                         approach_start_time = now
 
                     if now - approach_start_time > MAX_APPROACH_SECONDS:
@@ -481,7 +513,7 @@ def run_mouth_feed_session(
                     elif now - last_approach_command_time >= APPROACH_COMMAND_PERIOD:
                         tof_cm = last_valid_tof_cm
 
-                        if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_APPROACH_COMMAND"):
+                        if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_APPROACH_COMMAND"): #check estop before 
                             approach_active = False
                             break
 
@@ -593,7 +625,7 @@ def run_mouth_feed_session(
                             arm.approach_mouth(tof_cm)
                             last_approach_command_time = now
             else:
-                if approach_active and not bite_hold_active:
+                if approach_active and not bite_hold_active: #this is the approach before the tof hits limit
                     logger.info("[APPROACH] Face lost — stopping")
                     update_gui_state(
                         "error",
@@ -609,9 +641,10 @@ def run_mouth_feed_session(
                     approach_start_time = None
                     stop_distance_start = None
 
+            #if enabled, sets up the frame of the gui popup
             if SHOW_MOUTH_PREVIEW:
                 preview_frame = track_frame
-                if results.multi_face_landmarks:
+                if results.multi_face_landmarks: #if mediapipe doesnt find a face
                     landmarks = results.multi_face_landmarks[0].landmark
                     mx, my = get_mouth_center(landmarks, w, h)
                     cv2.circle(preview_frame, (mx, my), 6, (0, 255, 0), -1)
@@ -626,7 +659,7 @@ def run_mouth_feed_session(
             time.sleep(LOOP_DELAY)
 
     finally:
-        if not feeding_completed_and_homed:
+        if not feeding_completed_and_homed: #after the homing phases
             # If an emergency is latched, the emergency path already sent STOP.
             # Do not send another cleanup STOP here; it can look like a small
             # unexpected movement before recovery HOME starts.
@@ -698,14 +731,12 @@ def execute_next_bite(
     db: firestore.Client | None = None,
     robot_id: str | None = None,
 ) -> bool:
-    """
-    Full bite cycle with YOLO plate/spoon gates.
-    Returns True if a bite completed successfully (mouth + HOME).
-    """
-    if buttons is not None and buttons.is_emergency_latched():
+
+    if buttons is not None and buttons.is_emergency_latched(): #always checks emergency latch
         logger.warning("Skipping bite — emergency latched")
         return False
 
+    #chooses section for plate, validates its 1-4
     section = int(section_num if section_num is not None else get_selected_section())
     if section < 1 or section > 4:
         raise ValueError(f"section must be 1-4, got {section}")
@@ -718,19 +749,22 @@ def execute_next_bite(
         logger.info("=== BITE DONE (dry run) ===")
         return True
 
+    #actual bite handling, start sending to pi
     try:
         with PiArmClient() as arm:
-            bite_t0 = time.monotonic()
+            bite_t0 = time.monotonic() #cycle timer
             logger.info("Pi ping: %s", arm.ping())
             update_gui_state("idle", "Connected to Raspberry Pi arm server", connected=True, force=True)
 
+            #make sure there is food on the plate, cant go into feed unless there is
             if not ensure_plate_has_food_before_feed(arm, db, robot_id):
                 logger.warning("FEED blocked — plate YOLO did not pass")
                 return False
 
-            start_feed_cycle(section)
+            start_feed_cycle(section) #start the cycle
             logger.info("=== BITE START section=%s ===", section)
 
+            #show proper gui messages
             update_gui_state(
                 "feeding",
                 GUI_MESSAGES["feed_start"].format(section=section),
@@ -765,6 +799,7 @@ def execute_next_bite(
             # Let arm/camera settle so spoon is in frame before YOLO scan.
             time.sleep(float(os.environ.get("SCOOP_YOLO_SETTLE_SECONDS", "1.5")))
 
+            #check for the spoon emtpiness after it has gone to default mode, this helps with our models.
             if not run_spoon_yolo_check_after_scoop(section, db, robot_id):
                 _home_arm(arm, "SPOON_EMPTY_AFTER_SCOOP_RETURN_HOME")
                 end_feed_cycle("SPOON_EMPTY_AFTER_SCOOP")
@@ -778,6 +813,7 @@ def execute_next_bite(
                 )
                 return False
 
+            #check the estop once again
             if _estop_during_motion(buttons, arm, "EMERGENCY_BEFORE_MOUTH"):
                 return False
 
@@ -789,6 +825,7 @@ def execute_next_bite(
                 logger.warning("=== BITE ABORTED (emergency) section=%s ===", section)
                 return False
 
+            #marks the end of the feeding cycle
             if completed:
                 elapsed = time.monotonic() - bite_t0
                 logger.info("=== BITE DONE section=%s (%.1fs) ===", section, elapsed)
@@ -800,7 +837,7 @@ def execute_next_bite(
                         target,
                     )
             return completed
-
+    #failing exceptions catch
     except Exception as exc:
         logger.exception("Bite failed for section %s", section)
         update_gui_state(
@@ -844,7 +881,7 @@ def execute_next_bite(
 
     return False
 
-
+#update the app for selection
 def handle_plate_select_after_scan(
     arm: PiArmClient,
     db: firestore.Client | None,
@@ -855,7 +892,7 @@ def handle_plate_select_after_scan(
 
     return handle_plate_button_after_scan(arm, db, robot_id)
 
-
+#send stop command to arm
 def execute_stop(reason: str = "STOP") -> None:
     if _dry_run():
         logger.info("DRY_RUN stop (%s)", reason)
@@ -863,7 +900,7 @@ def execute_stop(reason: str = "STOP") -> None:
     with PiArmClient() as arm:
         arm.stop(reason)
 
-
+#send home message to arm
 def execute_home(reason: str = "HOME") -> None:
     if _dry_run():
         logger.info("DRY_RUN home")

@@ -8,8 +8,10 @@ from pathlib import Path
 
 from pymycobot.mycobot320 import MyCobot320
 
+# Jetson sends commands in the form of json commands to the server which direclty controls the robotic arm.
 
 def _load_dotenv() -> None:
+    # Used for the port and track speed parameters
     env_file = Path(__file__).resolve().parent / ".env"
     if not env_file.is_file():
         return
@@ -32,46 +34,45 @@ BAUD_RATE = int(os.environ.get("BAUD_RATE", "115200"))
 HOST = os.environ.get("PI_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PI_PORT", "5002"))
 
-# Startup is a JOINT-ANGLE move, not a coordinate move.
+# Startup is a JOINT-ANGLE move
 STARTUP_ANGLES = [0, 0, 0, 0, 0, 0]
 STARTUP_SPEED = int(os.environ.get("STARTUP_SPEED", "20"))
 
-# View transitions use send_coords with angular coordinate transition mode.
+# View transitions use send_coords with angular coordinate transition mode
 VIEW_SPEED = int(os.environ.get("VIEW_SPEED", "12"))
 VIEW_MODE = 0
 VIEW_SELECTION_WAIT = float(os.environ.get("VIEW_SELECTION_WAIT", "2.5"))
 VIEW_MOUTH_WAIT = float(os.environ.get("VIEW_MOUTH_WAIT", "2.5"))
-HOME_RETURN_WAIT = 0.0  # Removed extra wait after HOME command.
+HOME_RETURN_WAIT = 0.0  
 
-# Mouth tracking corrections use send_coords with linear coordinate mode.
+# Mouth tracking corrections using send_coords with linear coordinate mode
 TRACK_SPEED = int(os.environ.get("TRACK_SPEED", "65"))
 TRACK_MODE = 1
 
-# Known working views.
+# Known working views for detecting the mouth starting position and April Tag starting position
 MOUTH_VIEW = [141.1, 180.1, 414.0, -97.87, 1.06, 5.52]
 SELECTION_VIEW = [279.8, -90.3, 323.0, -162.44, 3.64, -96.64]
 
-# X/Z mouth alignment correction.
+# X/Z mouth alignment correction and speed of robot movement during mouth tarcking
 TRACK_STEP = float(os.environ.get("TRACK_STEP", "2.5"))
 ALIGN_PIXEL_THRESHOLD = int(os.environ.get("ALIGN_PIXEL_THRESHOLD", "25"))
 ALIGN_DOMINANT_AXIS_ONLY = os.environ.get("ALIGN_DOMINANT_AXIS_ONLY", "true").lower() in ("1", "true", "yes", "on")
 TRACK_LIMIT_MARGIN = float(os.environ.get("TRACK_LIMIT_MARGIN", "0.01"))
-
+# A section bounds the ranges the robot nudges to for mouth detection for x,y in CLAMP
 LIMITS = {
     "x": (21.3, 204.1),
     "z": (334.0, 435.0),
 }
 
-# Final forward-to-mouth approach.
+# Final forward-to-mouth approach
 APPROACH_STEP_Y = float(os.environ.get("APPROACH_STEP_Y", "3.0"))
 APPROACH_SPEED = int(os.environ.get("APPROACH_SPEED", "12"))
 APPROACH_MODE = 0
 SCOOP_WAIT_SCALE = float(os.environ.get("SCOOP_WAIT_SCALE", "0.55"))
 
-# You said +1 moved accurately. Keep +1 unless it reverses after remounting.
 APPROACH_Y_DIRECTION = +1
 
-# Keep Y physically bounded.
+# Keep Y physically bounded
 Y_LIMITS = (180.0, 330.0)
 
 
@@ -81,27 +82,26 @@ Y_LIMITS = (180.0, 330.0)
 # ---------------------------------------------------------
 # Each item is: (coords, speed, mode, wait_seconds)
 # mode 0 = angular coordinate transition mode, matching your working scoop tests.
-# Edit these lists if your final physical scoop paths change.
 SCOOP_TRAJECTORIES = {
     1: [
         ([14, -154.5, 523.3, -90.12, -2.81, -179.11], 20, 0, 4),
-        ([272.5,(-122),187.4,178.15,(-41.48),(-42.16)], 10, 0, 4),
-        ([259.4,(-134),172.5,(-150.81),(-9.67),(-85.15)], 10, 0, 4),
-        ([269.7,(-135.6),203.8,(-130.07),(-13.99),(-89.39)], 10, 0, 4),
+        ([272.5,(-102),187.4,178.15,(-41.48),(-42.16)], 10, 0, 4),
+        ([259.4,(-114),172.5,(-150.81),(-9.67),(-85.15)], 10, 0, 4),
+        ([269.7,(-115.6),203.8,(-130.07),(-13.99),(-89.39)], 10, 0, 4),
         ([14, -154.5, 523.3, -90.12, -2.81, -179.11], 20, 0, 4),
     ],
     2: [
         ([14, -154.5, 523.3, -90.12, -2.81, -179.11], 20, 0, 4),
-        ([264.9,(-39.5),188.5,(-170.87),31.49,(-142.47)], 10, 0, 4),
-        ([243.2,(-110.9),182.8,(-150.39),9.87,(-102.25)], 10, 0, 4),
-        ([245.9,(-108.2),205.2,(-130.34),11.22,(-98.09)], 10, 0, 4),
+        ([264.9,(-19.5),188.5,(-170.87),31.49,(-142.47)], 10, 0, 4),
+        ([243.2,(-95.9),182.8,(-150.39),9.87,(-102.25)], 10, 0, 4),
+        ([245.9,(-93.2),205.2,(-130.34),11.22,(-98.09)], 10, 0, 4),
         ([14, -154.5, 523.3, -90.12, -2.81, -179.11], 20, 0, 4),
     ],
     3: [
         ([14, -154.5, 523.3, -90.12, -2.81, -179.11], 20, 0, 4),
-        ([345.1,(-78.4),173.7,(-174.76),(-44.79),(-21.09)], 10, 0, 4),
-        ([344.7,(-35.3),153.2,(-139.78),(-4.81),(-80.02)], 10, 0, 4),
-        ([330.2,(-55.2),195.9,(-116.92),1.38,(-84.89)], 10, 0, 4),
+        ([325.1,(-68.4),173.7,(-174.76),(-44.79),(-21.09)], 10, 0, 4),
+        ([334.7,(-25.3),153.2,(-139.78),(-4.81),(-80.02)], 10, 0, 4),
+        ([320.2,(-45.2),195.9,(-116.92),1.38,(-84.89)], 10, 0, 4),
         ([4.4, -154.3, 523.5, -89.86, 4.21, -178.76], 20, 0, 4),
     ],
     4: [
@@ -143,10 +143,7 @@ def clamp(val, min_v, max_v):
 
 def safe_stop(reason="STOP"):
     """
-    Software stop for the myCobot.
-    This is not a physical power-cut emergency stop, but it immediately asks
-    the arm controller to stop motion.
-    """
+    Software stop for the myCobot """
     print(f"[STOP] Stopping arm. Reason: {reason}", flush=True)
 
     try:
@@ -177,8 +174,6 @@ def move_to_startup_position():
 
     mc.send_angles(STARTUP_ANGLES, STARTUP_SPEED)
 
-    # No post-HOME sleep: emergency recovery should return control immediately
-    # after the home command is sent.
     if HOME_RETURN_WAIT > 0:
         time.sleep(HOME_RETURN_WAIT)
 
@@ -254,12 +249,7 @@ def send_current_coords(speed, mode, label):
 
 
 def _limit_hint_for_cmd(cmd):
-    """Return a user-facing hint for the Jetson GUI when the arm reaches a tracking limit.
-
-    These hints are intentionally simple because the user may be older or may not
-    understand robot coordinates. If the physical direction feels reversed during
-    testing, swap the LEFT/RIGHT message mapping here only.
-    """
+    """Return a user-facing hint/message for the LCD when the arm reaches a tracking limit!"""
     hints = {
         "MOVE_LEFT": "MOVE_USER_LEFT",
         "MOVE_RIGHT": "MOVE_USER_RIGHT",
@@ -268,7 +258,7 @@ def _limit_hint_for_cmd(cmd):
     }
     return hints.get(cmd, "ADJUST_POSITION")
 
-
+# Apply_move() receives commands MOVE_LEFT, RIGHT, FORWARD, BACKWARD to adjust the coordinates
 def apply_move(cmd):
     global current
 
@@ -295,6 +285,7 @@ def apply_move(cmd):
     else:
         return None
 
+    # keeps between safe limits
     current["x"] = clamp(current["x"], *LIMITS["x"])
     current["z"] = clamp(current["z"], *LIMITS["z"])
 
@@ -317,14 +308,9 @@ def apply_move(cmd):
     send_current_coords(TRACK_SPEED, TRACK_MODE, f"Linear tracking correction {cmd}")
     return None
 
-
+# PROCESS_ALIGNMENT, uses thresholds for the x and y variation from center of USB screen and moves the robotic arm left or right until centered
 def process_alignment(error_x, error_y):
-    """Apply one bounded alignment correction and return any limit-hit hints.
-
-    Dominant-axis mode keeps the motion cleaner by sending at most one correction
-    per ALIGN command. This reduces command spam and helps avoid delayed/stale
-    corrections while tracking the mouth.
-    """
+    """Apply one bounded alignment correction"""
     set_arm_phase("MOUTH_ALIGN")
     limit_hits = []
 
@@ -344,7 +330,7 @@ def process_alignment(error_x, error_y):
 
     return limit_hits
 
-
+# APPROACH MOUTH moves the y axis to the mouth till TOF sensor
 def approach_mouth_step(tof_cm=None):
     global current
     set_arm_phase("APPROACH_MOUTH", f"tof_cm={tof_cm}")
@@ -362,15 +348,10 @@ def approach_mouth_step(tof_cm=None):
     send_current_coords(APPROACH_SPEED, APPROACH_MODE, "Y mouth approach")
 
 
-
+# Executes list of predefined coordinates
 def execute_scoop(section):
     """
-    Execute the fixed scoop trajectory for the selected plate section.
-
-    The Jetson sends this before starting mouth detection. After this function
-    finishes, the arm is back at the safe upper transition pose, ready to move
-    into the mouth tracking view.
-    """
+    Execute the fixed scoop trajectory for the selected plate section"""
     section = int(section)
 
     if section not in SCOOP_TRAJECTORIES:
@@ -395,7 +376,7 @@ def execute_scoop(section):
     print(f"[SCOOP] Completed scoop for plate section {section}", flush=True)
     set_arm_phase("SCOOP_DONE", f"section={section}")
 
-
+# Stops the robot and halts motion
 def bite_hold_ready(tof_cm=None):
     """Stop active tracking/approach motion and hold position for the bite window."""
     set_arm_phase("BITE_HOLD_READY", f"tof_cm={tof_cm}")
@@ -405,7 +386,7 @@ def bite_hold_ready(tof_cm=None):
 def send_json(conn, msg):
     conn.sendall((json.dumps(msg) + "\n").encode())
 
-
+# View selection, scoop to execute_scoop, to the pi, and the pi sends back a status ok and reply scoop done
 def handle_client(conn, addr):
     print(f"Connected: {addr}", flush=True)
 
@@ -509,9 +490,6 @@ def handle_client(conn, addr):
                     reason = msg.get("reason", "HOME")
                     print(f"HOME requested. Reason: {reason}", flush=True)
 
-                    # During emergency recovery, STOP was already sent first.
-                    # Do not call safe_stop() again because it can cause an extra
-                    # settling/twitch before the actual HOME/default movement.
                     if "EMERGENCY" not in str(reason).upper():
                         safe_stop(reason)
 
@@ -543,7 +521,7 @@ def handle_client(conn, addr):
 
 def main():
     move_to_startup_position()
-
+    # Pi acts as TCP server where server.listen(1) command is inputted to wait for Jetson to connect
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 

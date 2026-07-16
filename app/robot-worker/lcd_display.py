@@ -1,20 +1,11 @@
 #!/usr/bin/env python3
 """
-lcd_display.py
+LCD UI for the Jetson panel.
 
-C.A.R.E local LCD GUI.
+  python3 lcd_display.py           # poke at buttons yourself
+  python3 lcd_display.py --stdin   # worker/lcd_gui pipes JSON at us
 
-Use this file two ways:
-1. Standalone GUI test:
-   python3 lcd_display.py
-
-2. Integrated with main_controller_phase4.py:
-   main_controller_phase4.py starts this file as a subprocess with --stdin
-   and sends JSON lines such as:
-   {"state":"selection", "message":"Selected plate section 2", "selected_section":2}
-
-Important: this GUI file does NOT read Jetson GPIO.
-The main controller owns SELECT/FEED/EMERGENCY GPIO and only sends display updates here.
+We don't touch GPIO — just draw whatever comes in.
 """
 
 import argparse
@@ -29,6 +20,7 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 
 
+# waveshare size on our setup
 WINDOW_WIDTH = 800
 WINDOW_HEIGHT = 480
 
@@ -42,6 +34,7 @@ SECTION_IMAGES = {
     4: "section4.png",
 }
 
+# left "State" box — unknown ones just get uppercased
 STATE_LABELS = {
     "startup": "STARTUP",
     "idle": "IDLE",
@@ -77,6 +70,8 @@ class FeedingRobotGUI:
         self.root.title("C.A.R.E Feeding Robot Control Panel")
         self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
         self.root.attributes("-fullscreen", True)
+        
+        # Esc so you can get out when testing on a laptop
         self.root.bind("<Escape>", lambda _e: self.root.attributes("-fullscreen", False))
         self.root.configure(bg="#1e1e1e")
 
@@ -98,6 +93,7 @@ class FeedingRobotGUI:
         main_frame = tk.Frame(root, bg="#1e1e1e")
         main_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
+        # status left, plate pic right
         self.left_panel = tk.Frame(main_frame, bg="#2a2a2a", width=260)
         self.left_panel.pack(side="left", fill="y", padx=5)
 
@@ -122,6 +118,7 @@ class FeedingRobotGUI:
         self.create_info_box("Message", self.status_message, height=3)
         self.create_info_box("Error", self.error_message, height=3)
 
+        # fake buttons for desk demo — not wired to real SELECT/FEED
         button_frame = tk.Frame(self.left_panel, bg="#2a2a2a")
         button_frame.pack(pady=8)
 
@@ -191,6 +188,7 @@ class FeedingRobotGUI:
         section_frame.pack(pady=5)
 
         for i in range(1, 5):
+            # x=i — classic python for-loop trap
             btn = ttk.Button(
                 section_frame,
                 text=f"Section {i}",
@@ -222,8 +220,7 @@ class FeedingRobotGUI:
             photo = ImageTk.PhotoImage(image)
 
             self.image_label.configure(image=photo, text="")
-            self.image_label.image = photo
-
+            self.image_label.image = photo  # gotta keep this or it vanishes
         except Exception as e:
             self.image_label.configure(
                 image="",
@@ -259,21 +256,12 @@ class FeedingRobotGUI:
         self.load_plate_image(section)
 
     def next_section(self):
-        next_value = (self.selected_section.get() % 4) + 1
+        next_value = (self.selected_section.get() % 4) + 1  # 1→2→3→4→1
         self.change_section(next_value)
         self.update_message(f"Selected plate section {next_value}")
 
     def apply_update(self, msg):
-        """
-        Apply one JSON update from the Jetson controller.
-        Expected keys are optional:
-        - connected: bool
-        - state: str
-        - message: str
-        - selected_section: int
-        - emergency: bool
-        - error: str
-        """
+        # one JSON blob from lcd_gui — fields can be missing, that's fine
         if "connected" in msg:
             self.update_connection(bool(msg["connected"]))
 
@@ -288,6 +276,7 @@ class FeedingRobotGUI:
         if "selected_section" in msg and msg.get("selected_section") is not None:
             self.change_section(msg.get("selected_section"))
 
+        # e-stop wins — jam it into Error so you can't miss it
         if emergency:
             self.update_state("emergency")
             self.update_error(str(msg.get("message", "EMERGENCY STOP ACTIVE")))
@@ -296,10 +285,7 @@ class FeedingRobotGUI:
 
 
 def stdin_reader(input_queue):
-    """
-    Reads JSON lines from stdin in a background thread.
-    Tkinter updates are performed by the main Tk thread through poll_queue().
-    """
+    # background: chew through JSON lines from the worker
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -312,6 +298,7 @@ def stdin_reader(input_queue):
 
 
 def poll_queue(root, app, input_queue):
+    # Tk hates other threads — only touch widgets from here
     while True:
         try:
             msg = input_queue.get_nowait()

@@ -1,4 +1,8 @@
-"""Notify care-app when YOLO detects an empty plate (caregiver push)."""
+"""
+Tells care-app the plate looks empty so the caregiver gets a push.
+
+Same secret header as emergency_notify — just a different route.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def _plate_alert_url() -> str:
+    # prefer the dedicated env; otherwise swap .../emergency → .../plate-alert
     explicit = os.environ.get("CARE_APP_PLATE_ALERT_URL", "").strip()
     if explicit:
         return explicit
@@ -49,11 +54,12 @@ def notify_app_backend_plate_empty(
         method="POST",
         headers={
             "Content-Type": "application/json",
-            "x-robot-secret": secret,
+            "x-robot-secret": secret,  # same shared secret as e-stop notify
         },
     )
 
     try:
+        # don't stall the feed loop if the app is slow / offline
         with urllib.request.urlopen(req, timeout=4.0) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             logger.info("[PLATE_NOTIFY] response %s: %s", resp.status, body)

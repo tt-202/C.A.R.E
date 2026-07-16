@@ -1,4 +1,8 @@
-"""Call care-app /api/robot/emergency for caregiver push (after arm STOP)."""
+"""
+Hits care-app so the caregiver gets an e-stop push.
+
+Worker calls this after STOP is already on the arm — don't wait on this for safety.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ def notify_app_backend_emergency(
     reason: str,
     phase: str,
 ) -> None:
+    # both of these need to be set on the Jetson or we just log and bail
     url = os.environ.get("CARE_APP_EMERGENCY_URL", "").strip()
     secret = os.environ.get("CARE_ROBOT_SHARED_SECRET", "").strip()
 
@@ -40,11 +45,12 @@ def notify_app_backend_emergency(
         method="POST",
         headers={
             "Content-Type": "application/json",
-            "x-robot-secret": secret,
+            "x-robot-secret": secret,  # must match the app backend
         },
     )
 
     try:
+        # short timeout — e-stop path shouldn't hang on a slow network
         with urllib.request.urlopen(req, timeout=4.0) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             logger.info("[APP_NOTIFY] Push route response %s: %s", resp.status, body)

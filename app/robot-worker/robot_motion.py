@@ -1,28 +1,26 @@
-"""Execute allowlisted commands via the full feeding cycle (Jetson → Pi TCP)."""
-
+#route verified commands to feeding cycle
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any
 
 from feeding_cycle import (
-    calibrate_plate,
-    execute_home,
-    execute_next_bite,
-    execute_stop,
+    calibrate_plate, #during plate view and continue detection
+    execute_home, #return arm back to home
+    execute_next_bite, #run complete selection feeding cycle
+    execute_stop, #stop current robot motion
 )
 from robot_session import is_feeding_active
 
 if TYPE_CHECKING:
     from firebase_admin import firestore
-
     from gpio_buttons import ButtonManager
 
 logger = logging.getLogger(__name__)
 
-ALLOWED = frozenset({"home", "next_bite", "pause", "stop", "calibrate_plate"})
+ALLOWED = frozenset({"home", "next_bite", "pause", "stop", "calibrate_plate"}) #the only commands allowed, cannot be modified
 
-
+#gets all necessary info for the command
 def execute_command(
     cmd: str,
     payload: dict[str, Any] | None,

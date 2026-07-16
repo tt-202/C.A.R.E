@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
 """
-C.A.R.E plate + spoon YOLO helper using the same USB camera + V4L2 style as
-usb_camera_food_spoon_detection.py.
-
-This patch keeps the spoon check after SCOOP and now adds plate empty/full
-checking when the arm is in the selection/plate-view angle.
-
-Expected files/location:
-  - Plate: best.engine (or YOLO_PLATE_MODEL_PATH)
-  - Spoon: bestest.pt (or YOLO_SPOON_MODEL_PATH)
-  - Plug in the USB camera before running.
-
-Standalone tests:
-  python3 yolo_detector.py --target plate --preview
-  python3 yolo_detector.py --target spoon --preview
-  python3 yolo_detector.py --target all --preview
+Sequence: 
+- Loads the YOLO mode
+- Open USB camera to run detection for one second
+- Decides if spoon with food, not with food, unknown and returns
+- Returns with a dictonary
 """
 
 from pathlib import Path
@@ -28,13 +18,12 @@ import cv2
 BASE_DIR = Path(__file__).resolve().parent
 WINDOW_NAME = "USB YOLO Check"
 
-# Plate and spoon can use different weights (e.g. best.engine + bestest.pt).
+# Finds path of trained model, best.engine (plate + spoon), and bestest.engine (spoon enhanced)
 _PLATE_MODEL_CANDIDATES = ("best.engine")
 _SPOON_MODEL_CANDIDATES = ("bestest.pt", "best.engine")
 
-
+# Find the model, looking at environmental variables, then model path
 def _resolve_path_from_env(env_key: str, candidates: tuple[str, ...]) -> str:
-    """Resolve one model file: per-target env, then YOLO_MODEL_PATH, then first existing candidate."""
     for key in (env_key, "YOLO_MODEL_PATH"):
         override = os.environ.get(key, "").strip()
         if not override:
@@ -53,7 +42,6 @@ def _resolve_path_from_env(env_key: str, candidates: tuple[str, ...]) -> str:
 
     raise FileNotFoundError(
         f"No YOLO model for {env_key} in {BASE_DIR}. "
-        f"Tried {candidates}; set {env_key} or YOLO_MODEL_PATH in .env"
     )
 
 
@@ -71,53 +59,45 @@ def default_model_path(target: str = "plate") -> str:
         return resolve_spoon_model_path()
     return resolve_plate_model_path()
 
-
-CAMERA_ID = "/dev/video0"
+CAMERA_ID = "/dev/video0" # USB camera
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 CAMERA_FPS = 30
 CAMERA_FORMAT = "MJPG"
 
 CONFIDENCE = float(os.environ.get("YOLO_CONFIDENCE", "0.50"))
+# SCANS PLATE FOR 1 second!
 SCAN_SECONDS = float(os.environ.get("YOLO_SCAN_SECONDS", "1.0"))
 PLATE_SCAN_SECONDS = float(os.environ.get("YOLO_PLATE_SCAN_SECONDS", os.environ.get("YOLO_SCAN_SECONDS", "1.0")))
 SPOON_SCAN_SECONDS = float(os.environ.get("YOLO_SPOON_SCAN_SECONDS", os.environ.get("YOLO_SCAN_SECONDS", "1.0")))
 MIN_VOTES = int(os.environ.get("YOLO_MIN_VOTES", "2"))
 
-# Update these names after checking the printed model.names on the Jetson.
-# These aliases are intentionally broad so common naming variations still work.
+# Aliases for name variation across the different models
+# plate empty, spoon empty, plate with food, spoon with food,
 PLATE_EMPTY_CLASSES = {
-    "empty_plate", "plate_empty", "empty plate", "plate-empty",
-    "emptyplate", "plate no food", "no_food_plate", "plate_without_food",
-    "empty plate", "plate without food",
+    "empty_plate", "plate_empty",
 }
 PLATE_FULL_CLASSES = {
-    "full_plate", "plate_full", "plate with food", "plate-food",
-    "food_plate", "plate_food", "fullplate", "food_on_plate",
-    "plate_with_food",
+    "full_plate", "plate_with_food",
 }
 SPOON_EMPTY_CLASSES = {
-    "empty_spoon", "spoon_empty", "empty spoon", "spoon-empty",
-    "emptyspoon", "spoon no food", "no_food_spoon", "spoon_without_food",
-    "empty spoon", "spoon without food",
+    "empty_spoon", "spoon_empty",
 }
 SPOON_FULL_CLASSES = {
-    "full_spoon", "spoon_full", "spoon with food", "spoon-food",
-    "food_spoon", "spoon_food", "fullspoon", "food_on_spoon",
-    "spoon_with_food",
+    "food_on_spoon", "spoon_with_food",
 }
 
-
+# Normalizes, so what it returns, lowercase it, replace space, replace hyphens 
 def _norm(name):
     return str(name).strip().lower().replace(" ", "_").replace("-", "_")
 
-
+# Sets true for all variations of the plate with food, and without 
 def _alias_set(values):
     return {_norm(v) for v in values}
 
 
 def open_usb_camera():
-    """Open USB camera exactly like the working standalone YOLO script."""
+    """Open USB camera"""
     print(f"Opening USB camera: {CAMERA_ID}", flush=True)
     cap = cv2.VideoCapture(CAMERA_ID, cv2.CAP_V4L2)
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*CAMERA_FORMAT))
@@ -128,10 +108,20 @@ def open_usb_camera():
     if not cap.isOpened():
         raise RuntimeError(
             f"Could not open USB camera at {CAMERA_ID}. "
-            "Try /dev/video1 or /dev/video2."
+            "Try other /dev"
         )
     return cap
 
+# Main loop 
+''' it works all the frames that passes in the course of 1 second!!----
+---SO IT STARTS the one second timer--- 
+loops through each of the frames, each frame, all detected objects, chooses 
+the highest confidence one, and adds it to true or false counter, does that 
+to all the frames, then finalizes the true or false which one is the best, 
+and then it groups it into a dictionary and sends it 
+
+SCAN_SECONDS -> set to 1 second
+'''
 
 class CAREYoloDetector:
     def __init__(self, model_path=None, confidence=CONFIDENCE, target: str = "plate"):
@@ -146,7 +136,7 @@ class CAREYoloDetector:
         if not Path(self.model_path).exists():
             raise FileNotFoundError(
                 f"YOLO model not found: {self.model_path}. "
-                "Set YOLO_PLATE_MODEL_PATH / YOLO_SPOON_MODEL_PATH in .env"
+                "Set PATH in .env"
             )
         print(f"Loading YOLO model ({self.target}): {self.model_path}", flush=True)
         self.model = YOLO(self.model_path, task="detect")
@@ -154,6 +144,7 @@ class CAREYoloDetector:
         print(self.model.names, flush=True)
         print(flush=True)
 
+    # 1 second timer starts, and it takes the frame, uses YOLO to detect class
     def scan_target(self, target, scan_seconds=SCAN_SECONDS, preview=False):
         """
         Returns a dictionary with status: 'full', 'empty', or 'unknown'.
@@ -174,6 +165,8 @@ class CAREYoloDetector:
         self.load()
         cap = open_usb_camera()
         deadline = time.time() + float(scan_seconds)
+        # Over the period of frames in 1 second, each time full or empty is detected the counter is added on
+        # Initializes the empty and full dictionary
         votes = {"empty": 0, "full": 0}
         frames = 0
         best = {"class_name": None, "confidence": 0.0}
@@ -182,6 +175,7 @@ class CAREYoloDetector:
         if preview:
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
 
+        # Logging prints
         print(f"--- USB Camera + YOLO {target.title()} Check Active ---", flush=True)
         print(f"Camera device: {CAMERA_ID}", flush=True)
         print(f"Resolution: {CAMERA_WIDTH}x{CAMERA_HEIGHT}", flush=True)
@@ -190,12 +184,15 @@ class CAREYoloDetector:
 
         try:
             while time.time() < deadline:
+                # Reads the camera and gets one image 
                 success, frame = cap.read()
                 if not success or frame is None:
                     print("Failed to read frame.", flush=True)
                     continue
 
                 frames += 1
+                # Performs inference 
+                # Stores the boxes, class IDs, confidence into results
                 results = self.model(frame, conf=self.confidence, verbose=False)
                 annotated_frame = frame
 
@@ -203,16 +200,18 @@ class CAREYoloDetector:
                     result0 = results[0]
                     annotated_frame = result0.plot()
                     names = result0.names
+                    # Loop through objects in each frame
                     for box in result0.boxes:
                         cls_id = int(box.cls[0])
+                        # Gets confidence from the box, 0.96% confidence
                         conf = float(box.conf[0])
                         raw_name = str(names.get(cls_id, cls_id))
                         norm_name = _norm(raw_name)
                         last_seen.append((raw_name, conf))
-
+                        # Keeps strongest prediction for that frame
                         if conf > best["confidence"]:
                             best = {"class_name": raw_name, "confidence": conf}
-
+                        # If class is empty spoon, then increase votes in empty, else full
                         if norm_name in empty_aliases:
                             votes["empty"] += 1
                         elif norm_name in full_aliases:
@@ -224,14 +223,14 @@ class CAREYoloDetector:
                     key_code = cv2.waitKey(10) & 0xFF
                     if key_code == 27 or key_code == ord("q"):
                         break
-
+            # If full = 8, and empty = 2, then full is the status, if 1 and 1 then status is unknown
             if votes["full"] >= MIN_VOTES and votes["full"] >= votes["empty"]:
                 status = "full"
             elif votes["empty"] >= MIN_VOTES and votes["empty"] > votes["full"]:
                 status = "empty"
             else:
                 status = "unknown"
-
+            # Returns the status if full or not, the best detected class
             result = {
                 "target": target,
                 "status": status,

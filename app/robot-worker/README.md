@@ -1,38 +1,30 @@
-# C.A.R.E robot worker (Jetson Orin Nano)
+# Robot worker (Jetson)
 
-Listens to **Firebase Firestore** for commands from the care-app and controls the arm via **JSON TCP** to `../pi-server/pi_arm_server.py` (port **5002**).
+This runs on the Jetson. It listens for app commands in Firestore, reads the physical buttons, and tells the Pi what to move.
 
-**Reference:** `New_Settings_June26/main_controller_phase4.py` + `New_Settings_June26_raspberry/pi_arm_server.py` — same GPIO, ToF subprocess, AprilTag scan, and mouth-tracking flow.
+Talks to the Pi over TCP on port **5002** (`pi_arm_server.py`).
 
-## Feed cycle (one bite)
+## Buttons (BOARD pins)
 
-Matches `README_FEED_STATE_UPDATE.md` — SELECT stays locked until HOME finishes.
+| Pin | Button | What it does |
+|-----|--------|--------------|
+| 35 | SELECT | First press: AprilTag plate scan. After that: cycle section 1→2→3→4 |
+| 37 | FEED | One full bite (need a successful scan first) |
+| 33 | E-stop | Stop the arm, wait a bit, then HOME |
 
-1. **SCOOP** — Pi runs fixed trajectory for selected plate section (1–4)
-2. **VIEW_MOUTH** — Pi moves to mouth tracking pose
-3. **Mouth tracking** — Jetson MediaPipe + ToF subprocess → Pi `ALIGN` / `CENTERED` / `APPROACH_MOUTH`
-4. **BITE_HOLD** — ToF ≤ `STOP_DISTANCE_CM` (50 cm) stable for `STOP_DISTANCE_STABLE_SECONDS` (1 s), then Pi `BITE_HOLD_READY` + hold `BITE_HOLD_SECONDS` (2 s)
-5. **HOME** — Pi `move_to_startup_position()` (all-zero joints); then `end_feed_cycle()` unlocks SELECT
+During a bite, SELECT and FEED are ignored. E-stop always wins.
 
-Matches `CARE_bite_hold_patch/` (stable ToF confirm → freeze arm → bite timer → HOME).
+## One bite
 
-### Button rules (during feed)
+1. Check plate with YOLO (food there?)
+2. Scoop that section on the Pi
+3. Check spoon with YOLO
+4. Move to mouth view, track mouth (MediaPipe + ALIGN)
+5. Approach with ToF until close enough
+6. Hold still for the bite
+7. HOME — then SELECT works again
 
-- **SELECT** ignored while `feeding_active` (including mouth tracking)
-- **FEED** ignored during active feed cycle
-- **E-stop** always wins → STOP → recovery HOME → `end_feed_cycle("EMERGENCY_RECOVERED_HOME")`
-
-See `README_FEED_STATE_UPDATE.md` for state variables (`FEEDING_STARTED`, `FEEDING_HOLD_AT_MOUTH`, `FEEDING_RETURN_HOME`, etc.).
-
-## GPIO buttons (BOARD numbering)
-
-| BOARD pin | Action |
-|-----------|--------|
-| 35 | **SELECT** — first press: AprilTag scan; later: cycle section 1→2→3→4 |
-| 37 | **FEED** — full bite (requires scan once per worker run) |
-| 33 | **E-stop** — STOP + Firestore emergency + caregiver push |
-
-## Setup (Jetson)
+## Setup
 
 ```bash
 cd app/robot-worker
@@ -40,171 +32,82 @@ python3 -m venv venv --system-site-packages
 source venv/bin/activate
 pip install -r requirements.txt -r requirements-jetson-hardware.txt
 cp .env.example .env
-# edit .env — place firebase-service-account.json in this folder
+# put firebase-service-account.json here, set PI_IP, DRY_RUN=false
 python3 worker.py
 ```
 
-On Pi: `python3 app/pi-server/pi_arm_server.py` (port **5002**).
+`worker.py` loads `.env` by itself. Don’t do `export $(grep …)` — it breaks weird values.
 
-`worker.py` loads `.env` automatically — do not use `export $(grep ...)` (breaks values with spaces or dashes).
+Start the Pi first:
 
-## LCD GUI (same as June26)
+```bash
+cd app/pi-server
+python3 pi_arm_server.py
+```
 
-`lcd_display.py` opens fullscreen on the Jetson display. `worker.py` starts it automatically when `LCD_GUI_ENABLED=true` (default when a display is present).
+## YOLO
 
-- Status panel: connection, state, message, error
-- Plate panel: section 1–4 images from `images/section1.png` … `section4.png`
-- GPIO buttons still control the robot; the GUI is display-only
+Plate and spoon use different models:
 
-Standalone test: `python3 lcd_display.py`
+```env
+YOLO_PLATE_MODEL_PATH=best.engine
+YOLO_SPOON_MODEL_PATH=bestest.engine
+ENABLE_YOLO_CHECKS=true
+FORCE_PLATE_STATUS=auto
+FORCE_SPOON_STATUS=auto
+```
 
-## ToF sensor (same as June26)
+To fake an empty plate (test the caregiver alert):
 
-- **AprilTag scan:** `tof_sensor.py` reads plate height once in a subprocess (avoids GPIO/I2C conflict)
-- **Mouth approach:** `tof_stream_process.py` runs as a background subprocess; parent reads JSON distance lines
-- Set `USE_FAKE_TOF=true` + `FAKE_TOF_CM=60` only for desk testing without hardware
+```env
+FORCE_PLATE_STATUS=empty
+```
 
-## Firestore commands
+## Useful .env knobs
 
-`next_bite`, `calibrate_plate`, `home`, `pause`, `stop`
+| Variable | Typical | Notes |
+|----------|---------|--------|
+| `DRY_RUN` | `false` | Must be false on real hardware |
+| `BITE_HOLD_SECONDS` | `2` | How long we hold at the mouth (app can override via Firestore) |
+| `STOP_DISTANCE_CM` | `50` | ToF stop distance |
+| `CENTER_HOLD_SECONDS` | `1.5` | Mouth must stay centered this long before approach |
+| `ALIGN_COMMAND_PERIOD` | `0.20` | How often we send ALIGN |
+| `EMERGENCY_RECOVERY_SECONDS` | `10` | Hold after e-stop before HOME |
 
-## AprilTag plate scan
+More options are in `.env.example`. Scoop paths live on the Pi in `pi_arm_server.py`.
 
-Uses `april_tag_with_value_update.py` (copied from June26).
+## AprilTag
 
-1. Pi `VIEW_SELECTION`
-2. Camera index **0** detects tags **0–3** (tag36h11)
-3. ToF reads plate Z → `latest_plate_scan.py`
-4. Unlocks **FEED** for this worker run
+First SELECT:
 
-### Standalone test
+1. Arm goes to plate view
+2. Camera looks for tags 0–3
+3. Writes `latest_plate_scan.py`
+4. FEED unlocks for this run
+
+Quick test:
 
 ```bash
 python3 run_apriltag_scan.py --preview
 ```
 
-## Tuning (`.env` — defaults match `CARE_bite_hold_patch`)
+## If something breaks
 
-| Variable | Default |
-|----------|---------|
-| `STOP_DISTANCE_CM` | 50 |
-| `STOP_DISTANCE_STABLE_SECONDS` | 2 (ToF must stay ≤ stop distance before bite timer) |
-| `BITE_HOLD_SECONDS` | 3 |
-| `CENTER_HOLD_SECONDS` | 3 |
-| `CENTER_TOLERANCE` | 30 px |
-| `ARM_MOVE_SETTLE` | 1.0 s |
-| `MOUTH_SESSION_TIMEOUT` | 0 (disabled) |
+**Arm sits at plate after SELECT** — normal. It waits for FEED.
 
-Scoop trajectories and arm poses: `app/pi-server/pi_arm_server.py`
+**Stuck after FEED / never HOMEs** — check face in camera, ToF wiring, and logs for `[APPROACH]` / `[BITE_HOLD_READY]`.
 
-## YOLO plate/spoon checks
+**E-stop** — arm stops, holds ~10s, then HOMEs on its own.
 
-Requires `pip install ultralytics`. Plate and spoon can use **different** model files:
-
-| File | Default use |
-|------|-------------|
-| `best.engine` | Plate check (TensorRT) |
-| `bestest.engine` | Spoon check after SCOOP (TensorRT) |
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `YOLO_PLATE_MODEL_PATH` | `best.engine` | Weights for plate gate |
-| `YOLO_SPOON_MODEL_PATH` | `bestest.engine` | Weights for spoon gate |
-| `YOLO_MODEL_PATH` | — | Optional override for both if per-target paths unset |
-| `ENABLE_YOLO_CHECKS` | `true` | Run plate/spoon gate logic (keep `true` for real YOLO and manual overrides) |
-| `FORCE_PLATE_STATUS` | `auto` | `auto` = real YOLO; `full` / `empty` / `unknown` = force plate result |
-| `FORCE_SPOON_STATUS` | `auto` | `auto` = real YOLO; `full` / `empty` / `unknown` = force spoon result |
-| `YOLO_FAIL_OPEN` | `false` | If `true`, `unknown` plate/spoon may pass the gate |
-| `SHOW_YOLO_PREVIEW` | `false` | OpenCV window during YOLO scan |
-
-**Fast plate check (SELECT → plate view):**
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `YOLO_PLATE_SCAN_SECONDS` | `0.5` | Max scan time (often exits sooner) |
-| `YOLO_PLATE_MIN_VOTES` | `1` | Votes needed for full/empty |
-| `YOLO_PLATE_IMGSZ` | `416` | Smaller inference = faster on Jetson |
-| `YOLO_PLATE_SINGLE_SHOT_CONF` | `0.72` | Accept one strong detection immediately |
-| `PLATE_YOLO_SETTLE_SECONDS` | `0.25` | Pause after arm reaches plate view |
-| `YOLO_PRELOAD` | `true` | Load models at `worker.py` startup |
-
-Plate YOLO runs when SELECT moves the arm **to plate view** (from home). If already at plate view, SELECT only cycles section 1→4 (no YOLO). Logs show `elapsed_sec` and `early_exit: true` when the scan finishes early.
-
-**Real YOLO testing:**
-
-```env
-ENABLE_YOLO_CHECKS=true
-DRY_RUN=false
-YOLO_PLATE_MODEL_PATH=best.engine
-YOLO_SPOON_MODEL_PATH=bestest.engine
-FORCE_PLATE_STATUS=auto
-FORCE_SPOON_STATUS=auto
-```
-
-**Force plate empty (test blocked feed + caregiver alert):**
-
-```env
-ENABLE_YOLO_CHECKS=true
-FORCE_PLATE_STATUS=empty
-FORCE_SPOON_STATUS=auto
-```
-
-Invalid force values (e.g. `test`) are treated as `auto`. `ENABLE_YOLO_CHECKS=false` with both forces `auto` bypasses gates (legacy).
-
-## ~30 second feed cycle
-
-Timing is split between **Jetson** (`robot-worker/.env`) and **Pi** (`pi-server/.env`). After FEED, logs show `BITE DONE section=N (XX.Xs)`; warns if over `FEED_CYCLE_TARGET_SECONDS` (default 30).
-
-| Phase | Main knobs |
-|-------|------------|
-| Scoop | Pi `SCOOP_WAIT_SCALE` (default 0.55) |
-| YOLO | `YOLO_*_SCAN_SECONDS=1`, `YOLO_MIN_VOTES=1`, `SCOOP_YOLO_SETTLE_SECONDS=0.5` |
-| Mouth align | `MOUTH_TRACK_WIDTH/HEIGHT`, `ALIGN_COMMAND_PERIOD`, `MOUTH_REFINE_LANDMARKS=false` |
-| Mouth approach | `CENTER_HOLD_SECONDS=1.5`, `APPROACH_COMMAND_PERIOD`, Pi `APPROACH_STEP_Y` |
-| Bite hold | `STOP_DISTANCE_STABLE_SECONDS=1`, `BITE_HOLD_SECONDS=2` |
-| HOME / views | Pi `VIEW_MOUTH_WAIT`, `HOME_RETURN_WAIT`, `VIEW_SPEED` |
-
-On the Pi: `cp app/pi-server/.env.example app/pi-server/.env` and restart `pi_arm_server.py`.
-
-If mouth tracking is jittery after speeding up, raise `CENTER_HOLD_SECONDS` to `2.0` or lower `APPROACH_STEP_Y` on the Pi.
-
-## Troubleshooting (Jetson)
-
-### Arm stops after SELECT + FEED and does not return HOME
-
-**After SELECT (first press):** arm moves to **plate view** and stays there until FEED. This is normal (June26).
-
-**After FEED:** bite hold flow (`CARE_bite_hold_patch`):
-
-1. Face visible on `/dev/video0`; mouth centered **1.5 s** (`CENTER_HOLD_SECONDS`)
-2. ToF approach to **≤ 50 cm** (`STOP_DISTANCE_CM`)
-3. Confirm ToF stable **1 s** (`STOP_DISTANCE_STABLE_SECONDS`) — Jetson sends **`BITE_HOLD_READY`**, Pi stops arm
-4. Camera/MediaPipe close (no more ALIGN during hold)
-5. Hold **2 s** (`BITE_HOLD_SECONDS`) → **HOME**
-
-**If e-stop (pin 33) was pressed:** arm stops immediately, holds **10 s** (`EMERGENCY_RECOVERY_SECONDS`), then **HOME** automatically. Release the button when safe before the next feed.
-
-Check logs for `[BITE_HOLD_READY]`, `[APPROACH]`, `Emergency latched — recovery will HOME`.
-
-### `FieldDescriptor` / `label` — MediaPipe crash at mouth tracking
-
-Wrong `protobuf` version. Fix in venv:
+**MediaPipe `FieldDescriptor` error** — protobuf mismatch. In the venv:
 
 ```bash
-cd app/robot-worker
-source venv/bin/activate
 pip uninstall -y mediapipe protobuf
 pip install "protobuf>=4.25.3,<5" "mediapipe>=0.10.13"
-python3 -c "import mediapipe as mp; mp.solutions.face_mesh.FaceMesh(); print('MediaPipe OK')"
 ```
 
-Do **not** use system `~/.local` mediapipe — always use the venv.
+**ToF I2C errors** — usually a loose cable. Try `python3 tof_stream_process.py` alone, or reboot.
 
-### `[TOF ERROR] [Errno 121] Remote I/O error`
+## App commands (Firestore)
 
-I2C bus glitch on VL53L1X (wiring, loose cable, or ToF started while GPIO/I2C busy). Usually harmless after a feed error. If it repeats every bite:
-
-- Check ToF wiring on SDA/SCL
-- Reboot Jetson
-- Test alone: `python3 tof_stream_process.py`
-
+`next_bite`, `calibrate_plate`, `home`, `pause`, `stop`

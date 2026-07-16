@@ -1,6 +1,11 @@
-"""YOLO plate/spoon gates (CARE_YOLO_Plate_RecheckAfterFeed_Jetson)."""
-
 from __future__ import annotations
+
+# Makes feeding decisions based on YOLO results. The state machine follows these decisions.
+''' The yolo_gates.py file acts as the decision-making layer between the state machine and 
+the YOLO detector. Instead of performing object detection itself, it calls yolo_detector.py 
+to determine whether the plate or spoon is full, empty, or unknown. Based on the returned status, 
+it decides whether the robot should continue feeding, retry scooping, or stop the feeding process 
+while also updating the GUI and robot status.'''
 
 import logging
 import os
@@ -18,7 +23,8 @@ from robot_session import (
     set_robot_view,
     increment_spoon_failed,
     reset_spoon_failed,
-)
+) 
+
 from robot_stats import set_yolo_status
 
 if TYPE_CHECKING:
@@ -34,6 +40,10 @@ ForceMode = Literal["auto", "full", "empty", "unknown"]
 VALID_FORCE_VALUES: frozenset[str] = frozenset({"auto", "full", "empty", "unknown"})
 FORCED_YOLO_STATUSES: frozenset[str] = frozenset({"full", "empty", "unknown"})
 
+# Configuration flags for testing
+# ENABLE_YOLO_CHECKS, enable/disable YOLO detection
+# FORCE_SPOON_STATUS, manually force spoon status 
+# FORCE_PLATE_STATUS, manually force plate status 
 ENABLE_YOLO_CHECKS = os.environ.get("ENABLE_YOLO_CHECKS", "true").lower() in ("1", "true", "yes")
 SHOW_YOLO_PREVIEW = os.environ.get("SHOW_YOLO_PREVIEW", "false").lower() in ("1", "true", "yes")
 YOLO_FAIL_OPEN = os.environ.get("YOLO_FAIL_OPEN", "false").lower() in ("1", "true", "yes")
@@ -79,7 +89,7 @@ def _publish_yolo(
 def _resolve_plate_status() -> tuple[YoloStatus, str, dict | None]:
     """
     Resolve plate YOLO result.
-    Returns (status, source, raw_result) where source is 'forced', 'yolo', or 'disabled'.
+    Returns (status, source, raw_result),, source is 'forced', 'yolo', or 'disabled'.
     """
     force = get_force_plate_status()
     if force in FORCED_YOLO_STATUSES:
@@ -137,11 +147,14 @@ def _resolve_spoon_status() -> tuple[YoloStatus, str, dict | None]:
 
     try:
         from yolo_detector import check_spoon_state
-
+        # Uses the YOLO_DETECTOR model to hold if the status is full or empty
         result = check_spoon_state(preview=SHOW_YOLO_PREVIEW)
+        # Formats result into status
         status = str(result.get("status", "unknown")).strip().lower()
+        # Validate the returned status, anything unexpected becomes "unknown".
         if status not in FORCED_YOLO_STATUSES:
             status = "unknown"
+        # If the status is full, continue feeding, else try to scoop again
         if status != "full":
             _log_yolo_diagnostic("SPOON", result, status)
         return status, "yolo", result  # type: ignore[return-value]
@@ -159,7 +172,7 @@ def _spoon_gate_skipped() -> bool:
     """Legacy bypass: YOLO disabled and no manual spoon override."""
     return not ENABLE_YOLO_CHECKS and get_force_spoon_status() == "auto"
 
-
+# Is the plate empty? If returned full the robot continues, else, the robot stops
 def run_plate_yolo_check(
     arm: PiArmClient | None,
     db: firestore.Client | None,
@@ -168,19 +181,23 @@ def run_plate_yolo_check(
     already_in_selection_view: bool = False,
 ) -> bool:
     """Whole-plate YOLO at selection view. Returns True if feed may proceed."""
+    # Move robot, selection view, for specific section of the plate
     section = get_selected_section()
 
+    # For testing, automatically full
     if _plate_gate_skipped():
         set_plate_food_status("full")
         _publish_yolo(db, robot_id, plate_status="full")
         logger.info("[YOLO PLATE] skipped (ENABLE_YOLO_CHECKS=false, FORCE_PLATE_STATUS=auto)")
         return True
 
+    # Makes sure arm is aiming towards plate
     if arm is not None and not already_in_selection_view:
         arm.view_selection()
         set_robot_view("selection")
         time.sleep(VIEW_SETTLE_SECONDS)
 
+    # Start the plate checking
     update_gui_state(
         "plate_checking",
         GUI_MESSAGES["plate_check_start"],
@@ -189,12 +206,13 @@ def run_plate_yolo_check(
         error="NONE",
         force=True,
     )
-
+    # Running YOLO
     status, source, _raw = _resolve_plate_status()
     set_plate_food_status(status)
     _publish_yolo(db, robot_id, plate_status=status)
     logger.info("[YOLO PLATE] status=%s section=%s source=%s", status, section, source)
 
+    # If full, then continues
     if status == "full":
         update_gui_state(
             "plate_full",
@@ -205,7 +223,7 @@ def run_plate_yolo_check(
             force=True,
         )
         return True
-
+    # If empty, then stop feeding
     if status == "empty":
         update_gui_state(
             "plate_empty",
@@ -218,7 +236,7 @@ def run_plate_yolo_check(
         if robot_id:
             notify_app_backend_plate_empty(robot_id=robot_id, section=section, status=status)
         return False
-
+    # Else GUI unknown, because not empty or full
     update_gui_state(
         "plate_unknown",
         GUI_MESSAGES["plate_unknown"],
@@ -263,7 +281,8 @@ def ensure_plate_has_food_before_feed(
     logger.info("[FEED_PLATE_GATE] cached status=%s — rechecking plate", cached)
     return run_plate_yolo_check(arm, db, robot_id, already_in_selection_view=True)
 
-
+# After the robot scoops food, use YOLO to verify whether the spoon contains food
+# STATE MACHINE CALLS THIS FUNCTION IN YOLO GATES WHICH CHECKS YOLO_DETECTOR
 def run_spoon_yolo_check_after_scoop(
     section: int,
     db: firestore.Client | None,
@@ -286,7 +305,7 @@ def run_spoon_yolo_check_after_scoop(
         error="NONE",
         force=True,
     )
-
+    # Ask YOLO_DETECTOR for the spoon status.
     status, source, _raw = _resolve_spoon_status()
     _publish_yolo(db, robot_id, spoon_status=status)
     logger.info("[YOLO SPOON] section=%s status=%s source=%s", section, status, source)

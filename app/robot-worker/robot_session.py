@@ -1,9 +1,4 @@
-"""
-In-memory feed session state (New_Settings_June26 / README_FEED_STATE_UPDATE).
-
-SELECT stays locked until a feed cycle completes HOME and end_feed_cycle() runs.
-"""
-
+#saves info from the current robot turn on, restarts data once restarted
 from __future__ import annotations
 
 import logging
@@ -11,16 +6,16 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-_lock = threading.Lock()
-apriltag_scan_completed = False
+_lock = threading.Lock() #mutual exclusion lock, for safe read and change state
+apriltag_scan_completed = False # checks whether we have successfully pulled april tag
 selected_plate_section = 1
 
 system_state = "IDLE"
 feed_cycle_state = "END_FEED"
-feeding_active = False
+feeding_active = False #make sure not multiple feeds can be activated
 
 # YOLO / arm view tracking (CARE_YOLO_Plate_RecheckAfterFeed_Jetson)
-current_robot_view = "unknown"
+current_robot_view = "unknown" #which view are we in, distinct phases of the robot
 plate_food_status = "unknown"
 _spoon_failed_scoops: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
 
@@ -52,7 +47,7 @@ def is_apriltag_scan_done() -> bool:
     with _lock:
         return apriltag_scan_completed
 
-
+#waits till select updated and then update once again
 def get_selected_section() -> int:
     with _lock:
         return selected_plate_section
